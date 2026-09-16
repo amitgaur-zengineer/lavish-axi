@@ -1,0 +1,7 @@
+initial_post_status=200
+initial_delivery=["Accepted once"]
+retry_status=200
+poll_woke_after_duplicate=false
+fresh_status=200
+woken_delivery=["Fresh feedback"]
+result=PASS
