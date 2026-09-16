@@ -1,0 +1,12 @@
+OPEN status=opened key=067e1ec4d78ce9c8 url=http://127.0.0.1:49321/session/067e1ec4d78ce9c8
+POST 1 status=queued retained=1 first=NOTE-1 last=NOTE-1 bytes=1350050 revision=1 ack_ids=0
+POST 2 status=queued retained=2 first=NOTE-1 last=NOTE-2 bytes=2700099 revision=2 ack_ids=0
+POST 3 status=queued retained=3 first=NOTE-1 last=NOTE-3 bytes=4050148 revision=3 ack_ids=0
+POST 4 status=queued retained=3 first=NOTE-2 last=NOTE-4 bytes=4050148 revision=4 ack_ids=1
+POST 5 status=queued retained=3 first=NOTE-3 last=NOTE-5 bytes=4050148 revision=5 ack_ids=2
+RETRY-EVICTED status=queued pending_prompts=5 retained=3 ack_contains_oldest=true revision=5
+PERSISTED retained=3 first=NOTE-3 last=NOTE-5 bytes=4050148 cap=5242880 within_cap=true ack_ids=2 pending_prompts=5
+ASSERT newest_visible=true oldest_evicted=true dedup_preserved=true
+LEGACY-LOAD retained=1 first=LEGACY-NEW bytes=2700108 cap=5242880 within_cap=true ack_oldest=true revision=1
+NO-OVERLAP-UI retained=1 text=["NEWEST REPLACEMENT NOTE"] bytes=150 old_evicted=true old_ack=true revision=11
+AGENT-REPLY-SYNC retained=1 role=agent text="AGENT REPLACEMENT REPLY" old_evicted=true old_ack=true revision=21
