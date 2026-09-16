@@ -1,0 +1,40 @@
+page:
+  title: Agent reply validation · Lavish
+  refs: 31
+snapshot:
+uid=g2:1_0 RootWebArea "Agent reply validation · Lavish" url="http://127.0.0.1:45291/session/c1ba467220448c17?no-gate=1"
+  uid=g2:1_1 StaticText "Lavish"
+  uid=g2:1_2 StaticText "EDITOR"
+  uid=g2:1_3 button "Annotate" description="Toggle annotate/explore mode (⌘I / Ctrl+I)" pressed
+  uid=g2:1_4 button "More" expandable haspopup="menu"
+  uid=g2:1_5 Iframe
+    uid=g2:1_6 RootWebArea "Agent reply validation" url="http://127.0.0.1:45291/artifact/c1ba467220448c17/index.html?artifact_revision=1&artifact_load_token=tb49K0HuciKHPL5ieuXkOrGKgkLWQct0"
+      uid=g2:1_7 main
+        uid=g2:1_8 heading "Checkout review" level="1"
+        uid=g2:1_9 StaticText "Review the latest checkout flow updates in the Conversation panel."
+  uid=g2:1_10 complementary
+    uid=g2:1_11 heading "Conversation" level="2"
+    uid=g2:2_0 StaticText "AGENT"
+    uid=g2:2_1 StaticText "What changed"
+    uid=g2:2_2 StaticText "The checkout flow is ready for another look."
+    uid=g2:2_3 StaticText "Renamed the payment step"
+    uid=g2:2_4 StaticText "Clarified the confirmation state"
+    uid=g2:2_5 StaticText "Review the updated labels"
+    uid=g2:2_6 StaticText "Send any remaining feedback"
+    uid=g2:2_7 StaticText "AGENT"
+    uid=g2:2_8 StaticText "Follow-up from stdin"
+    uid=g2:2_9 StaticText "Stdin preserves this list"
+    uid=g2:2_10 StaticText "Newlines remain intact"
+    uid=g2:2_11 StaticText "AGENT"
+    uid=g2:2_12 StaticText "Renamed the final button."
+    uid=g2:1_23 StaticText "Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish."
+    uid=g2:1_24 textbox "Write a message for the agent..." multiline
+    uid=g2:1_25 button "Attach images"
+    uid=g2:1_26 status atomic live="polite" relevant="additions text"
+    uid=g2:1_27 button "Send & End"
+    uid=g2:1_28 button "Send to Agent"
+help[4]:
+  Run `chrome-devtools-axi fill @g2:1_24 "text"` to fill the "Write a message for the agent..." field
+  Run `chrome-devtools-axi click @g2:1_3` to click the "Annotate" button
+  Run `chrome-devtools-axi scroll down` to scroll down
+  Use `chrome-devtools-axi eval <expr>` for JS expressions. For multi-statement code, pass a function: `eval "() => { ...; return result }"`
