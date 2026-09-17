@@ -477,10 +477,14 @@ test("diagram playbook owns assume-nothing and one-concept-per-diagram guidance"
     "the diagram playbook must prefer one concept per diagram",
   );
 
+  const playbookIds = createPlaybookOutput([]).playbooks.map((playbook) => playbook.id);
   const otherSurfaces = [
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     JSON.stringify(createDesignOutput()),
     createSkillMarkdown(),
+    ...playbookIds
+      .filter((id) => id !== "diagram")
+      .map((id) => JSON.stringify(createPlaybookOutput([id]).playbook)),
   ];
   for (const surface of otherSurfaces) {
     assert.doesNotMatch(surface, /one concept per diagram/i);

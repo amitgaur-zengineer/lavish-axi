@@ -245,7 +245,7 @@ export const PLAYBOOKS = [
       "End with what was deliberately left out and where to look next, not a summary that restates the piece.",
     ],
     design_rules: [
-      "Assume the reader knows nothing about the system: define terms at first use and explain from zero.",
+      "Define unfamiliar terms at first use; for the reader's starting point, follow the diagram playbook's assume-nothing rule rather than restating it here.",
       "Name the question the explanation answers at the top, so the reader knows whether it is their question.",
       "Put prose beside figures - inline SVG for the flow or before/after, HTML for the reasoning - per the diagram playbook.",
       "Link evidence rather than pasting logs or diffs; inlined evidence buries the narrative and goes stale.",
