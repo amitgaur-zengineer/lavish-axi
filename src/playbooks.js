@@ -253,7 +253,6 @@ export const PLAYBOOKS = [
     ],
     pitfalls: [
       "Do not restate the PR body, diff, or ticket file-by-file; the source documents already exist and the reader can open them.",
-      "Do not presume reader context - jargon, prior decisions, or system topology the reader has not seen.",
       "Do not bury the answer under a diagram of the entire system when the question is about one slice of it.",
       "Do not present inferred reasoning as verified fact; cite or label it.",
     ],

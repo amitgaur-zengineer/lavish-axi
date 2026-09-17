@@ -189,9 +189,10 @@ test("design output is the sole emitted concise explicit-background guidance", (
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     getCommandHelp("design"),
     createSkillMarkdown(),
-    ...["table", "comparison", "plan", "code", "input", "slides"].map((id) =>
-      JSON.stringify(createPlaybookOutput([id])),
-    ),
+    ...createPlaybookOutput([])
+      .playbooks.map((playbook) => playbook.id)
+      .filter((id) => id !== "diagram")
+      .map((id) => JSON.stringify(createPlaybookOutput([id]))),
   ];
   for (const surface of otherAgentSurfaces) {
     assert.ok(!surface.includes(instruction));
@@ -452,7 +453,10 @@ test("explanation playbook routes understanding of existing things and separates
   assert.ok(output.playbook.structure.some((item) => /one-sentence answer/i.test(item)));
   assert.ok(output.playbook.structure.some((item) => /what was deliberately left out/i.test(item)));
   assert.ok(output.playbook.pitfalls.some((item) => /restate the PR body, diff, or ticket file-by-file/i.test(item)));
-  assert.ok(output.playbook.pitfalls.some((item) => /presume reader context/i.test(item)));
+  assert.ok(
+    output.playbook.design_rules.some((item) => /diagram playbook's assume-nothing rule/i.test(item)),
+    "reader starting point is owned by the diagram playbook and only pointed at here",
+  );
   assert.ok(output.playbook.pitfalls.some((item) => /inferred reasoning as verified fact/i.test(item)));
 });
 
@@ -482,13 +486,12 @@ test("diagram playbook owns assume-nothing and one-concept-per-diagram guidance"
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     JSON.stringify(createDesignOutput()),
     createSkillMarkdown(),
-    ...playbookIds
-      .filter((id) => id !== "diagram")
-      .map((id) => JSON.stringify(createPlaybookOutput([id]).playbook)),
+    ...playbookIds.filter((id) => id !== "diagram").map((id) => JSON.stringify(createPlaybookOutput([id]).playbook)),
   ];
   for (const surface of otherSurfaces) {
     assert.doesNotMatch(surface, /one concept per diagram/i);
     assert.doesNotMatch(surface, /knows nothing/i);
+    assert.doesNotMatch(surface, /presume/i);
   }
 
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-playbook-diagram-`);
