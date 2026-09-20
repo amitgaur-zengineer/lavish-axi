@@ -52,7 +52,11 @@ export function revisionPresentationForIndex(index) {
 // are trying to read.
 export function revisionLimits() {
   return {
-    entries: 8,
+    // One row per palette entry, derived rather than written down: a cap larger
+    // than the palette would hand the seventh revision the first one's colour
+    // *and* its border and pattern, which is precisely the case the palette
+    // exists to prevent.
+    entries: revisionPalette().length,
     rawEntries: 256,
     marks: 200,
     rawMarks: 2000,
@@ -63,6 +67,7 @@ export function revisionLimits() {
     timestamp: 40,
     excerpt: 120,
     selector: 400,
+    selectorDepth: 32,
   };
 }
 
@@ -137,11 +142,20 @@ export function parseRevisionRegistry(doc) {
 // A CSS selector the SDK's existing reveal path can resolve. An author-set id
 // wins because it survives edits to the surrounding tree; the nth-of-type chain
 // is the fallback for the common case of an unlabelled block.
+//
+// Only a chain anchored at the document root or at an id says which element it
+// means. One that ran out of ancestor budget - or that walked a detached
+// subtree - reads like `div > p:nth-of-type(2)`, which `querySelector` happily
+// resolves against the first similar subtree anywhere in the page. Revealing
+// the wrong block is worse than revealing none, so an unrooted chain is
+// discarded and its mark is dropped by the caller.
 export function revisionSelectorFor(element) {
+  const limits = revisionLimits();
   const parts = [];
   let node = element;
   let depth = 0;
-  while (node && node.nodeType === 1 && depth < 12) {
+  while (node && node.nodeType === 1) {
+    if (depth >= limits.selectorDepth) return "";
     const tag = String(node.tagName || "").toLowerCase();
     if (!tag) return "";
     const id = node.getAttribute ? String(node.getAttribute("id") || "").trim() : "";
@@ -162,7 +176,7 @@ export function revisionSelectorFor(element) {
     node = parent;
     depth += 1;
   }
-  return parts.join(" > ");
+  return parts[0] === "html" ? parts.join(" > ") : "";
 }
 
 // The marked blocks, in document order, for the revisions the registry declared.

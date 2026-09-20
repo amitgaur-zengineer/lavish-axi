@@ -29,7 +29,12 @@ function element(tag, attrs = {}, children = []) {
   return node;
 }
 
+// Marks are read out of a live document, so a fixture's marked elements must
+// hang off a root or `revisionSelectorFor` rightly refuses to name them.
+// Elements that already have a parent keep the tree the test built for them.
 function doc({ registry = null, marked = [] } = {}) {
+  const loose = marked.filter((node) => !node.parentElement);
+  if (loose.length > 0) element("html", {}, [element("body", {}, loose)]);
   return {
     querySelector: (selector) =>
       selector === "script[data-lavish-revisions]" && registry !== null ? { textContent: registry } : null,
@@ -179,6 +184,20 @@ test("marks stop at the cap so one artifact cannot flood the legend", () => {
   assert.equal(marks.length, limits.marks);
 });
 
+// Regression: the cap was a written-down 8 while the palette held 6, so
+// revisions 7 and 8 were handed revision 1 and 2's colour, border style and
+// pattern - three identical signals, and no way to tell the rounds apart.
+test("the registry accepts no more revisions than the palette can distinguish", () => {
+  const limits = revisionLimits();
+  assert.equal(limits.entries, revisionPalette().length);
+
+  const entries = Array.from({ length: limits.entries + 4 }, (_, index) => ({ id: `r${index}` }));
+  const revisions = parseRevisionRegistry(doc({ registry: registryJson(entries) }));
+
+  const swatches = revisions.map((revision) => `${revision.color}/${revision.border_style}/${revision.pattern}`);
+  assert.equal(new Set(swatches).size, revisions.length);
+});
+
 test("every palette entry is distinguishable without colour", () => {
   const signals = revisionPalette().map((entry) => `${entry.borderStyle}/${entry.pattern}`);
 
@@ -211,6 +230,45 @@ test("an unlabelled block gets an nth-of-type chain that resolves back to it", (
 
   assert.equal(revisionSelectorFor(second), "html > body > p:nth-of-type(2)");
   assert.equal(revisionSelectorFor(first), "html > body > p:nth-of-type(1)");
+});
+
+// Regression: the walk stopped at 12 ancestors and returned the partial chain
+// it had, e.g. `div > p`. That resolves against the first similar subtree
+// anywhere in the document, so Reveal would flash a block the agent never
+// marked. An unrooted chain is now discarded instead.
+test("a block nested past the ancestor budget yields no selector rather than an unrooted one", () => {
+  const limits = revisionLimits();
+  const target = element("p");
+  let node = target;
+  for (let depth = 0; depth < limits.selectorDepth + 2; depth += 1) {
+    node = element("div", {}, [node]);
+  }
+  const body = element("body", {}, [node]);
+  element("html", {}, [body]);
+
+  assert.equal(revisionSelectorFor(target), "");
+});
+
+test("a detached subtree yields no selector, because its chain names no document root", () => {
+  const target = element("p");
+  element("div", {}, [target]);
+
+  assert.equal(revisionSelectorFor(target), "");
+});
+
+test("a mark whose selector cannot be rooted is dropped instead of revealed wrongly", () => {
+  const limits = revisionLimits();
+  const target = element("p", { "data-lavish-revision": "r1" });
+  let node = target;
+  for (let depth = 0; depth < limits.selectorDepth + 2; depth += 1) {
+    node = element("div", {}, [node]);
+  }
+  const body = element("body", {}, [node]);
+  element("html", {}, [body]);
+
+  const revisions = [{ id: "r1", mark_count: 0 }];
+  assert.deepEqual(collectRevisionMarks(doc({ marked: [target] }), revisions), []);
+  assert.equal(revisions[0].mark_count, 0);
 });
 
 test("an id that is not a bare CSS identifier falls back to the structural chain", () => {

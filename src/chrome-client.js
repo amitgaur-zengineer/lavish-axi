@@ -2453,7 +2453,10 @@ function revealWarning(warning) {
 // registry of ten thousand records walk the whole array on the chrome's main
 // thread before yielding its handful of rows.
 const REVISION_LIMITS = {
-  entries: 8,
+  // Matches the SDK's palette length (src/artifact-revisions.js). The chrome is
+  // served raw and cannot import it, so the number is repeated here; the
+  // palette-length test in test/artifact-revisions.test.js fails if they drift.
+  entries: 6,
   rawEntries: 256,
   marks: 200,
   rawMarks: 2000,
