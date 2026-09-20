@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   collectRevisionMarks,
   isAddressableRevisionId,
+  exactRevisionText,
   isUniqueElementId,
   normalizeRevisionEntry,
   parseRevisionRegistry,
@@ -351,6 +352,45 @@ test("normalizeRevisionEntry refuses anything that is not an object with a usabl
   for (const value of [null, undefined, 3, "r1", [], { id: "" }, { id: " r 1 " }]) {
     assert.equal(normalizeRevisionEntry(value, 0), null);
   }
+});
+
+// Regression: ids were truncated to the length budget before deduplication, so
+// two ids sharing their first 60 characters collapsed into one revision and the
+// second round's blocks showed up under the first. Identity is now rejected
+// when it is too long, never shortened.
+test("two long ids sharing a prefix stay separate revisions instead of merging", () => {
+  const limits = revisionLimits();
+  const prefix = "r".repeat(limits.id);
+  const revisions = parseRevisionRegistry(
+    doc({
+      registry: registryJson([
+        { id: `${prefix}1`, label: "one" },
+        { id: `${prefix}2`, label: "two" },
+      ]),
+    }),
+  );
+
+  assert.deepEqual(revisions, []);
+});
+
+test("an id within the budget is kept whole, and one over it is refused", () => {
+  const limits = revisionLimits();
+  const exact = "r".repeat(limits.id);
+
+  assert.equal(exactRevisionText(exact, limits.id), exact);
+  assert.equal(exactRevisionText(`${exact}x`, limits.id), "");
+  assert.equal(exactRevisionText("  spaced  ", 40), "spaced");
+  assert.equal(exactRevisionText(null, 40), "");
+});
+
+test("a mark whose id is too long matches no revision rather than the nearest one", () => {
+  const limits = revisionLimits();
+  const overlong = "r".repeat(limits.id + 1);
+  const target = marked(overlong);
+  const revisions = [{ id: "r1", mark_count: 0 }];
+
+  assert.deepEqual(collectRevisionMarks(doc({ marked: [target] }), revisions), []);
+  assert.equal(revisions[0].mark_count, 0);
 });
 
 test("isAddressableRevisionId matches what a data attribute can carry back", () => {

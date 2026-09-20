@@ -86,10 +86,20 @@ export function isAddressableRevisionId(id) {
   return text.length > 0 && text === text.trim() && !/\s/.test(text);
 }
 
+// Identity is never truncated, only rejected. Cutting an id to a length budget
+// merges two ids that share a prefix, and the second revision's blocks would
+// then appear under the first - a wrong answer dressed as a right one. The
+// same reasoning covers a selector: a truncated one is still valid CSS, and
+// still points somewhere else.
+export function exactRevisionText(value, max) {
+  const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  return text.length > 0 && text.length <= max ? text : "";
+}
+
 export function normalizeRevisionEntry(entry, index) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const limits = revisionLimits();
-  const id = truncateRevisionText(entry.id, limits.id);
+  const id = exactRevisionText(entry.id, limits.id);
   if (!isAddressableRevisionId(id)) return null;
   // No colour, border or pattern travels in this message. The chrome derives
   // the swatch from the server-injected palette by registry position, so an
@@ -208,11 +218,9 @@ export function collectRevisionMarks(doc, revisions) {
   for (const element of elements) {
     if (examined >= limits.rawMarks || marks.length >= limits.marks) break;
     examined += 1;
-    const id = element.getAttribute
-      ? truncateRevisionText(element.getAttribute("data-lavish-revision"), limits.id)
-      : "";
+    const id = element.getAttribute ? exactRevisionText(element.getAttribute("data-lavish-revision"), limits.id) : "";
     if (!Object.prototype.hasOwnProperty.call(declared, id)) continue;
-    const selector = truncateRevisionText(revisionSelectorFor(element, doc), limits.selector);
+    const selector = exactRevisionText(revisionSelectorFor(element, doc), limits.selector);
     if (!selector) continue;
     declared[id].mark_count += 1;
     marks.push({
