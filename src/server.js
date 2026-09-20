@@ -2792,6 +2792,11 @@ export function createChromeHtml(
     attachmentMaxBytes,
     attachmentMaxCount,
     attachmentAcceptedMime: acceptedMime,
+    // The legend's swatches are server-owned, not artifact-owned. The chrome
+    // derives every swatch from this palette by registry position, so an
+    // artifact cannot hand all its revisions the same colour and pattern and
+    // collapse the one signal that tells the rounds apart.
+    revisionPalette: artifactRevisions.revisionPalette(),
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";

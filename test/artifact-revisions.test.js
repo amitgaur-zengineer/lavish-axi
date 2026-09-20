@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   collectRevisionMarks,
   isAddressableRevisionId,
+  isUniqueElementId,
   normalizeRevisionEntry,
   parseRevisionRegistry,
   readArtifactRevisions,
@@ -32,13 +33,24 @@ function element(tag, attrs = {}, children = []) {
 // Marks are read out of a live document, so a fixture's marked elements must
 // hang off a root or `revisionSelectorFor` rightly refuses to name them.
 // Elements that already have a parent keep the tree the test built for them.
-function doc({ registry = null, marked = [] } = {}) {
+function doc({ registry = null, marked = [], ids = {} } = {}) {
   const loose = marked.filter((node) => !node.parentElement);
   if (loose.length > 0) element("html", {}, [element("body", {}, loose)]);
   return {
     querySelector: (selector) =>
       selector === "script[data-lavish-revisions]" && registry !== null ? { textContent: registry } : null,
-    querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? marked : []),
+    querySelectorAll: (selector) => {
+      if (selector === "[data-lavish-revision]") return marked;
+      // `ids` says how many elements in this fake document carry each id, so a
+      // test can express a document with duplicate ids. Unlisted ids that some
+      // element actually carries are unique by default.
+      if (selector.startsWith("#")) {
+        const id = selector.slice(1);
+        const count = Object.prototype.hasOwnProperty.call(ids, id) ? ids[id] : 1;
+        return new Array(count).fill(null);
+      }
+      return [];
+    },
   };
 }
 
@@ -194,8 +206,28 @@ test("the registry accepts no more revisions than the palette can distinguish", 
   const entries = Array.from({ length: limits.entries + 4 }, (_, index) => ({ id: `r${index}` }));
   const revisions = parseRevisionRegistry(doc({ registry: registryJson(entries) }));
 
-  const swatches = revisions.map((revision) => `${revision.color}/${revision.border_style}/${revision.pattern}`);
-  assert.equal(new Set(swatches).size, revisions.length);
+  // Index is what the chrome looks the swatch up by, so distinct indexes within
+  // the palette length is exactly the distinguishability guarantee.
+  const swatches = revisions.map((revision) => revisionPresentationForIndex(revision.index));
+  assert.equal(
+    new Set(swatches.map((entry) => `${entry.hex}/${entry.borderStyle}/${entry.pattern}`)).size,
+    revisions.length,
+  );
+});
+
+// Regression: the chrome used to render `raw.color` and `raw.border_style`
+// straight off the message, so artifact JavaScript could give every revision
+// the same swatch and erase the distinction the legend promises. The SDK no
+// longer sends presentation at all.
+test("presentation never travels in the revision message", () => {
+  const revisions = parseRevisionRegistry(
+    doc({ registry: registryJson([{ id: "r1", color: "#ff0000", border_style: "dotted", pattern: "dots" }]) }),
+  );
+
+  for (const field of ["color", "border_style", "pattern"]) {
+    assert.equal(Object.hasOwn(revisions[0], field), false, `${field} must not be sent to the chrome`);
+  }
+  assert.equal(revisions[0].index, 0);
 });
 
 test("every palette entry is distinguishable without colour", () => {
@@ -214,12 +246,34 @@ test("a revision keeps its colour for as long as its registry position holds, an
   assert.deepEqual(revisionPresentationForIndex(2), palette[2]);
 });
 
-test("an author-set id wins the selector because it survives edits to the surrounding tree", () => {
+test("a unique author-set id wins the selector because it survives edits to the surrounding tree", () => {
   const target = element("section", { id: "pricing" });
   const body = element("body", {}, [element("header"), target]);
   element("html", {}, [body]);
 
-  assert.equal(revisionSelectorFor(target), "#pricing");
+  assert.equal(revisionSelectorFor(target, doc({ marked: [target] })), "#pricing");
+});
+
+// Regression: any syntactically valid id became `#id`, which resolves to the
+// first element carrying it. Generated HTML repeats ids, so Reveal could flash
+// an earlier duplicate instead of the block the agent marked.
+test("an id shared with another element is not used, because it names the other one", () => {
+  const target = element("section", { id: "pricing" });
+  const body = element("body", {}, [element("section", { id: "pricing" }), target]);
+  element("html", {}, [body]);
+
+  const document = doc({ marked: [target], ids: { pricing: 2 } });
+  assert.equal(revisionSelectorFor(target, document), "html > body > section:nth-of-type(2)");
+});
+
+test("an id is not trusted when the document cannot be asked whether it is unique", () => {
+  const target = element("section", { id: "pricing" });
+  const body = element("body", {}, [target]);
+  element("html", {}, [body]);
+
+  assert.equal(revisionSelectorFor(target, null), "html > body > section");
+  assert.equal(isUniqueElementId(null, "pricing"), false);
+  assert.equal(isUniqueElementId({}, "pricing"), false);
 });
 
 test("an unlabelled block gets an nth-of-type chain that resolves back to it", () => {
@@ -228,8 +282,9 @@ test("an unlabelled block gets an nth-of-type chain that resolves back to it", (
   const body = element("body", {}, [first, second]);
   element("html", {}, [body]);
 
-  assert.equal(revisionSelectorFor(second), "html > body > p:nth-of-type(2)");
-  assert.equal(revisionSelectorFor(first), "html > body > p:nth-of-type(1)");
+  const document = doc({ marked: [first, second] });
+  assert.equal(revisionSelectorFor(second, document), "html > body > p:nth-of-type(2)");
+  assert.equal(revisionSelectorFor(first, document), "html > body > p:nth-of-type(1)");
 });
 
 // Regression: the walk stopped at 12 ancestors and returned the partial chain
@@ -246,14 +301,14 @@ test("a block nested past the ancestor budget yields no selector rather than an 
   const body = element("body", {}, [node]);
   element("html", {}, [body]);
 
-  assert.equal(revisionSelectorFor(target), "");
+  assert.equal(revisionSelectorFor(target, doc({ marked: [target] })), "");
 });
 
 test("a detached subtree yields no selector, because its chain names no document root", () => {
   const target = element("p");
   element("div", {}, [target]);
 
-  assert.equal(revisionSelectorFor(target), "");
+  assert.equal(revisionSelectorFor(target, doc({ marked: [target] })), "");
 });
 
 test("a mark whose selector cannot be rooted is dropped instead of revealed wrongly", () => {
@@ -276,7 +331,7 @@ test("an id that is not a bare CSS identifier falls back to the structural chain
   const body = element("body", {}, [target]);
   element("html", {}, [body]);
 
-  assert.equal(revisionSelectorFor(target), "html > body > section");
+  assert.equal(revisionSelectorFor(target, doc({ marked: [target] })), "html > body > section");
 });
 
 test("normalizeRevisionEntry caps each field and falls back to the id for a missing label", () => {

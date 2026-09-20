@@ -91,17 +91,16 @@ export function normalizeRevisionEntry(entry, index) {
   const limits = revisionLimits();
   const id = truncateRevisionText(entry.id, limits.id);
   if (!isAddressableRevisionId(id)) return null;
-  const position = Number.isInteger(index) && index >= 0 ? index : 0;
-  const presentation = revisionPresentationForIndex(position);
+  // No colour, border or pattern travels in this message. The chrome derives
+  // the swatch from the server-injected palette by registry position, so an
+  // artifact cannot hand every revision the same presentation and erase the
+  // distinction the legend promises.
   return {
     id,
-    index: position,
+    index: Number.isInteger(index) && index >= 0 ? index : 0,
     label: truncateRevisionText(entry.label, limits.label) || id,
     timestamp: truncateRevisionText(entry.timestamp, limits.timestamp),
     summary: truncateRevisionText(entry.summary, limits.summary),
-    color: presentation.hex,
-    border_style: presentation.borderStyle,
-    pattern: presentation.pattern,
     mark_count: 0,
   };
 }
@@ -139,6 +138,21 @@ export function parseRevisionRegistry(doc) {
   return revisions;
 }
 
+// Generated HTML repeats ids more often than anyone would like, and `#id`
+// resolves to the first one. An id shared with another element names that
+// element, not this one, so it is not a shortcut - it is a wrong answer.
+// A document that cannot be asked (no `querySelectorAll`) is treated the same
+// way, because an unverifiable id is not a verified one.
+export function isUniqueElementId(doc, id) {
+  if (!doc || typeof doc.querySelectorAll !== "function") return false;
+  try {
+    const found = doc.querySelectorAll(`#${id}`);
+    return Boolean(found) && found.length === 1;
+  } catch {
+    return false;
+  }
+}
+
 // A CSS selector the SDK's existing reveal path can resolve. An author-set id
 // wins because it survives edits to the surrounding tree; the nth-of-type chain
 // is the fallback for the common case of an unlabelled block.
@@ -149,7 +163,7 @@ export function parseRevisionRegistry(doc) {
 // resolves against the first similar subtree anywhere in the page. Revealing
 // the wrong block is worse than revealing none, so an unrooted chain is
 // discarded and its mark is dropped by the caller.
-export function revisionSelectorFor(element) {
+export function revisionSelectorFor(element, doc) {
   const limits = revisionLimits();
   const parts = [];
   let node = element;
@@ -159,7 +173,7 @@ export function revisionSelectorFor(element) {
     const tag = String(node.tagName || "").toLowerCase();
     if (!tag) return "";
     const id = node.getAttribute ? String(node.getAttribute("id") || "").trim() : "";
-    if (id && /^[A-Za-z][-\w]*$/.test(id)) {
+    if (id && /^[A-Za-z][-\w]*$/.test(id) && isUniqueElementId(doc, id)) {
       parts.unshift(`#${id}`);
       return parts.join(" > ");
     }
@@ -198,7 +212,7 @@ export function collectRevisionMarks(doc, revisions) {
       ? truncateRevisionText(element.getAttribute("data-lavish-revision"), limits.id)
       : "";
     if (!Object.prototype.hasOwnProperty.call(declared, id)) continue;
-    const selector = truncateRevisionText(revisionSelectorFor(element), limits.selector);
+    const selector = truncateRevisionText(revisionSelectorFor(element, doc), limits.selector);
     if (!selector) continue;
     declared[id].mark_count += 1;
     marks.push({

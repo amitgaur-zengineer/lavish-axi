@@ -2467,8 +2467,13 @@ const REVISION_LIMITS = {
   excerpt: 120,
   selector: 400,
 };
+// Server-owned, injected into the session JSON from src/artifact-revisions.js.
+// The swatch is presentation the chrome owes the reader, not something the
+// artifact gets a say in, so nothing about it is read from the message.
+const REVISION_PALETTE = (Array.isArray(sessionData.revisionPalette) ? sessionData.revisionPalette : []).filter(
+  (entry) => entry && /^#[0-9a-fA-F]{6}$/.test(String(entry.hex)),
+);
 const REVISION_BORDER_STYLES = ["solid", "dashed", "dotted", "double"];
-const REVISION_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 /** @type {any[]} */
 let revisionEntries = [];
@@ -2490,9 +2495,23 @@ function revisionPatternFill(pattern) {
   return "";
 }
 
-// Re-derive every rendered value from a value the chrome itself owns. A colour
-// or border style taken straight from the message would be an artifact-supplied
-// CSS value, and the swatch is the one place it would land in a style property.
+// The swatch for a revision's position in the registry. Position is the only
+// thing the artifact influences, and it cannot repeat one: ids are deduplicated
+// before this runs, so each accepted revision gets a distinct index and
+// therefore a distinct swatch.
+function revisionPresentation(index) {
+  const entry = REVISION_PALETTE.length > 0 ? REVISION_PALETTE[index % REVISION_PALETTE.length] : null;
+  return {
+    color: entry ? String(entry.hex) : "#0072b2",
+    borderStyle: REVISION_BORDER_STYLES.includes(String(entry && entry.borderStyle))
+      ? String(entry.borderStyle)
+      : "solid",
+    pattern: revisionPatternFill(entry && entry.pattern),
+  };
+}
+
+// Only text crosses from the artifact into the legend, and it crosses as
+// textContent. Nothing the message carries reaches a style property.
 function normalizeRevisionMessage(msg) {
   const rawRevisions = Array.isArray(msg && msg.revisions) ? msg.revisions : [];
   const revisions = [];
@@ -2504,16 +2523,12 @@ function normalizeRevisionMessage(msg) {
     if (!raw || typeof raw !== "object") continue;
     const id = revisionText(raw.id, REVISION_LIMITS.id);
     if (!id || /\s/.test(id) || byId.has(id)) continue;
-    const color = REVISION_COLOR_RE.test(String(raw.color || "")) ? String(raw.color) : "#0072b2";
-    const borderStyle = REVISION_BORDER_STYLES.includes(String(raw.border_style)) ? String(raw.border_style) : "solid";
     const entry = {
       id,
       label: revisionText(raw.label, REVISION_LIMITS.label) || id,
       timestamp: revisionText(raw.timestamp, REVISION_LIMITS.timestamp),
       summary: revisionText(raw.summary, REVISION_LIMITS.summary),
-      color,
-      borderStyle,
-      pattern: revisionPatternFill(raw.pattern),
+      ...revisionPresentation(revisions.length),
       marks: [],
     };
     byId.set(id, entry);
