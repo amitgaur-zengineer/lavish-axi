@@ -135,14 +135,17 @@ export function parseRevisionRegistry(doc) {
   if (!Array.isArray(parsed)) return [];
 
   const revisions = [];
-  const seen = {};
+  // A Set, not an object: `__proto__` is a legal revision id, and assigning it
+  // as a plain-object key never becomes an own property, so duplicates of it
+  // would slip past the check below.
+  const seen = new Set();
   let examined = 0;
   for (const raw of parsed) {
     if (examined >= limits.rawEntries || revisions.length >= limits.entries) break;
     examined += 1;
     const entry = normalizeRevisionEntry(raw, revisions.length);
-    if (!entry || Object.prototype.hasOwnProperty.call(seen, entry.id)) continue;
-    seen[entry.id] = true;
+    if (!entry || seen.has(entry.id)) continue;
+    seen.add(entry.id);
     revisions.push(entry);
   }
   return revisions;
@@ -208,9 +211,12 @@ export function revisionSelectorFor(element, doc) {
 // row to live under, so it is not shown rather than shown unattributed.
 export function collectRevisionMarks(doc, revisions) {
   const limits = revisionLimits();
-  const declared = {};
+  // A Map, not an object: see `parseRevisionRegistry`. Keyed on a plain object,
+  // a revision declared as `__proto__` would be unreachable here and every one
+  // of its marked blocks silently dropped.
+  const declared = new Map();
   for (const revision of Array.isArray(revisions) ? revisions : []) {
-    if (revision && isAddressableRevisionId(revision.id)) declared[revision.id] = revision;
+    if (revision && isAddressableRevisionId(revision.id)) declared.set(revision.id, revision);
   }
   const marks = [];
   const elements = doc && doc.querySelectorAll ? doc.querySelectorAll("[data-lavish-revision]") : [];
@@ -219,10 +225,10 @@ export function collectRevisionMarks(doc, revisions) {
     if (examined >= limits.rawMarks || marks.length >= limits.marks) break;
     examined += 1;
     const id = element.getAttribute ? exactRevisionText(element.getAttribute("data-lavish-revision"), limits.id) : "";
-    if (!Object.prototype.hasOwnProperty.call(declared, id)) continue;
+    if (!declared.has(id)) continue;
     const selector = exactRevisionText(revisionSelectorFor(element, doc), limits.selector);
     if (!selector) continue;
-    declared[id].mark_count += 1;
+    declared.get(id).mark_count += 1;
     marks.push({
       revision_id: id,
       selector,

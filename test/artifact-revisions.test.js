@@ -400,3 +400,36 @@ test("isAddressableRevisionId matches what a data attribute can carry back", () 
   assert.equal(isAddressableRevisionId("r 1"), false);
   assert.equal(isAddressableRevisionId(null), false);
 });
+
+// `__proto__` is an ordinary revision id by every rule this module states: it
+// is non-empty, carries no whitespace, and round-trips through a data
+// attribute. It is only special to a plain-object dictionary, where assigning
+// it never becomes an own property - so a registry keyed that way would both
+// accept a duplicate of it and lose every block it marked.
+test("a revision named __proto__ is deduplicated like any other id", () => {
+  const revisions = parseRevisionRegistry(
+    doc({
+      registry: registryJson([
+        { id: "__proto__", label: "kept" },
+        { id: "__proto__", label: "duplicate" },
+      ]),
+    }),
+  );
+
+  assert.deepEqual(
+    revisions.map((revision) => [revision.id, revision.label]),
+    [["__proto__", "kept"]],
+  );
+});
+
+test("a block marked for a revision named __proto__ is still attributed to it", () => {
+  const target = marked("__proto__", { text: "revised copy" });
+  const revisions = [{ id: "__proto__", mark_count: 0 }];
+  const marks = collectRevisionMarks(doc({ marked: [target] }), revisions);
+
+  assert.deepEqual(
+    marks.map((mark) => [mark.revision_id, mark.excerpt]),
+    [["__proto__", "revised copy"]],
+  );
+  assert.equal(revisions[0].mark_count, 1);
+});
