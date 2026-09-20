@@ -639,6 +639,15 @@ export async function serve({
   });
 
   app.get("/", async (req, res) => {
+    // The index below discloses every open session's file path and a working
+    // capability URL, so it must never reach a caller that isn't this machine
+    // talking to itself. `X-Forwarded-Host` means a reverse proxy relayed the
+    // request; the proxy's own loopback hop to this process would otherwise
+    // make every proxied client look like loopback (#308 round 2).
+    if (!isLoopbackRequestAddress(req) || req.headers["x-forwarded-host"] !== undefined) {
+      res.type("html").send(createLandingHtml());
+      return;
+    }
     const sessions = await store.listSessions();
     const listeners = new Map([...activePolls].map(([key, holder]) => [key, listenerLabel(holder)]));
     const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
@@ -2321,6 +2330,16 @@ export function buildAllowedHostnames({ host, hosts = [], linkHost: linkHostName
 // allowlist, for operators who front the server with their own auth/proxy.
 export function allowsAllHosts(allowedHosts = []) {
   return allowedHosts.some((value) => String(value).trim() === "*");
+}
+
+const LOOPBACK_ADDRESS_PATTERN = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+
+// Whether the TCP peer for this request is this machine talking to itself.
+// Used to gate disclosure (the GET / session index) on something a Host or
+// Origin header can never prove, since both are attacker-controlled.
+export function isLoopbackRequestAddress(req) {
+  const address = req.socket?.remoteAddress ?? req.ip ?? "";
+  return LOOPBACK_ADDRESS_PATTERN.test(String(address));
 }
 
 function parseHostAuthority(value) {

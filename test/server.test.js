@@ -27,6 +27,7 @@ import {
   hostnameFromHostHeader,
   isAllowedHostHeader,
   isAllowedRequestHost,
+  isLoopbackRequestAddress,
   readAttachmentUploadBody,
   resolveArtifactAsset,
   resolveDesignAssetPath,
@@ -6685,6 +6686,93 @@ test("GET / session index escapes file paths in session rows", async () => {
     const index = await fetch(`${base}/`).then((response) => response.text());
     assert.ok(!index.includes("<img src=x>"), "a file name must never render as markup");
     assert.ok(index.includes("&lt;img src=x&gt;.html"), "the escaped file name still renders");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("isLoopbackRequestAddress accepts only loopback-shaped addresses", () => {
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "127.5.9.20" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::ffff:127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: {}, ip: "127.0.0.1" }), true);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "100.64.12.34" } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: "::ffff:100.64.12.34" } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: { remoteAddress: undefined } }), false);
+  assert.equal(isLoopbackRequestAddress({ socket: {} }), false);
+});
+
+// #308 round 2: a client reaching the process over a non-loopback interface, or a
+// loopback client whose request traversed a reverse proxy (X-Forwarded-Host present),
+// must never see the session index - only the plain landing card, with no file paths,
+// pending counts, or capability links.
+test("GET / session index is withheld from a genuinely non-loopback client", async (t) => {
+  const tailscaleIpv4 = availableConcreteIpv4();
+  if (!tailscaleIpv4) {
+    t.skip("host has no non-loopback IPv4 address to connect through");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    env: {},
+    detectTailscale: async () => ({ ipv4: tailscaleIpv4, magicDnsName: "review-phone.example.ts.net" }),
+    idleTimeoutMs: null,
+  });
+  try {
+    const loopbackBase = `http://127.0.0.1:${server.port}`;
+    await openIndexSession(loopbackBase, artifact);
+
+    const loopbackIndex = await fetch(`${loopbackBase}/`).then((response) => response.text());
+    assert.ok(loopbackIndex.includes("artifact.html"), "loopback still gets the full session index");
+
+    const remoteIndex = await fetch(`http://${tailscaleIpv4}:${server.port}/`).then((response) => response.text());
+    assert.match(
+      remoteIndex,
+      /Open the review session URL printed by your agent\./,
+      "non-loopback gets the landing card",
+    );
+    assert.ok(!remoteIndex.includes("artifact.html"), "non-loopback never sees a session file path");
+    assert.equal(indexSessionLinks(remoteIndex).length, 0, "non-loopback gets no capability links");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index is withheld from a loopback request carrying X-Forwarded-Host", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    host: "127.0.0.1",
+    linkHost: "127.0.0.1",
+    allowedHosts: ["proxy.example"],
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    await openIndexSession(base, artifact);
+
+    const proxied = await rawRequest(server.port, "/", {
+      host: `127.0.0.1:${server.port}`,
+      headers: { "x-forwarded-host": "proxy.example" },
+    });
+    assert.equal(proxied.status, 200);
+    assert.match(proxied.body, /Open the review session URL printed by your agent\./);
+    assert.ok(!proxied.body.includes("artifact.html"), "a proxied loopback hop never sees a session file path");
+    assert.equal(indexSessionLinks(proxied.body).length, 0, "a proxied loopback hop gets no capability links");
+
+    const direct = await fetch(`${base}/`).then((response) => response.text());
+    assert.ok(direct.includes("artifact.html"), "a direct loopback request without a proxy still sees the index");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
