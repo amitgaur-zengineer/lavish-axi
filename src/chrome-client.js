@@ -2483,10 +2483,22 @@ let revisionMarks = [];
 const revisionRevealCursor = new Map();
 let revisionsDrawerOpen = false;
 
+// Display-only fields. Anything the legend merely shows can be shortened.
 function revisionText(value, max) {
   if (typeof value !== "string" && typeof value !== "number") return "";
   const text = String(value).trim();
   return text.length > max ? text.slice(0, max) : text;
+}
+
+// Identity fields, mirroring `exactRevisionText` in src/artifact-revisions.js.
+// The message is untrusted here, so shortening an id or a selector is worse
+// than dropping it: two distinct overlong ids collapse into one legend row, and
+// the first 400 characters of a long selector are a different valid selector
+// that Reveal would resolve to some other block.
+function revisionExact(value, max) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim();
+  return text.length > 0 && text.length <= max ? text : "";
 }
 
 function revisionPatternFill(pattern) {
@@ -2521,7 +2533,7 @@ function normalizeRevisionMessage(msg) {
     if (examined >= REVISION_LIMITS.rawEntries || revisions.length >= REVISION_LIMITS.entries) break;
     examined += 1;
     if (!raw || typeof raw !== "object") continue;
-    const id = revisionText(raw.id, REVISION_LIMITS.id);
+    const id = revisionExact(raw.id, REVISION_LIMITS.id);
     if (!id || /\s/.test(id) || byId.has(id)) continue;
     const entry = {
       id,
@@ -2542,8 +2554,8 @@ function normalizeRevisionMessage(msg) {
     if (examined >= REVISION_LIMITS.rawMarks || marks.length >= REVISION_LIMITS.marks) break;
     examined += 1;
     if (!raw || typeof raw !== "object") continue;
-    const revisionId = revisionText(raw.revision_id, REVISION_LIMITS.id);
-    const selector = revisionText(raw.selector, REVISION_LIMITS.selector);
+    const revisionId = revisionExact(raw.revision_id, REVISION_LIMITS.id);
+    const selector = revisionExact(raw.selector, REVISION_LIMITS.selector);
     const owner = byId.get(revisionId);
     if (!owner || !selector) continue;
     const mark = {
@@ -2628,10 +2640,14 @@ function buildRevisionRow(entry) {
     const reveal = document.createElement("button");
     reveal.type = "button";
     reveal.className = "revision-reveal";
-    reveal.dataset.revisionId = entry.id;
     const position = (revisionRevealCursor.get(entry.id) || 0) % entry.marks.length;
     reveal.textContent = entry.marks.length === 1 ? "Reveal" : "Reveal " + (position + 1) + "/" + entry.marks.length;
     reveal.setAttribute("aria-label", "Reveal the next block changed in " + entry.label);
+    // Bound per row rather than delegated from the list: the rows are rebuilt
+    // on every render anyway, so there is no listener to accumulate, and the
+    // button carries the revision it belongs to without a data attribute round
+    // trip through the DOM.
+    reveal.onclick = () => revealNextRevisionMark(entry.id);
     foot.appendChild(reveal);
   }
   body.appendChild(foot);
@@ -2652,8 +2668,7 @@ function renderRevisionLegend() {
     " · " +
     (revisionMarks.length === 1 ? "1 marked block" : revisionMarks.length + " marked blocks");
 
-  revisionsList.textContent = "";
-  for (const entry of revisionEntries) revisionsList.appendChild(buildRevisionRow(entry));
+  revisionsList.replaceChildren(...revisionEntries.map(buildRevisionRow));
 }
 
 function setRevisionsDrawerOpen(open) {
@@ -4095,11 +4110,6 @@ revisionsButton.onclick = () => {
   closeWarningsDrawer();
   setRevisionsDrawerOpen(revisionsDrawer.hidden);
 };
-revisionsList.addEventListener("click", (event) => {
-  const button = /** @type {any} */ (event.target)?.closest?.(".revision-reveal");
-  const id = button && button.dataset ? String(button.dataset.revisionId || "") : "";
-  if (id) revealNextRevisionMark(id);
-});
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
 chatAttachButton.onclick = () => chatAttachInput.click();
