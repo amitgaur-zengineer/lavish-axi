@@ -1,0 +1,249 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  collectRevisionMarks,
+  isAddressableRevisionId,
+  normalizeRevisionEntry,
+  parseRevisionRegistry,
+  readArtifactRevisions,
+  revisionLimits,
+  revisionPalette,
+  revisionPresentationForIndex,
+  revisionSelectorFor,
+} from "../src/artifact-revisions.js";
+
+// Hand-built DOM stubs, matching the convention in mermaid-node.test.js and
+// table-cell.test.js: the helpers duck-type what they touch, so a fake keeps
+// the tests honest about which properties the browser path actually needs.
+function element(tag, attrs = {}, children = []) {
+  const node = {
+    tagName: tag.toUpperCase(),
+    nodeType: 1,
+    parentElement: null,
+    children,
+    textContent: attrs.textContent || "",
+    getAttribute: (name) => (Object.prototype.hasOwnProperty.call(attrs, name) ? String(attrs[name]) : null),
+  };
+  for (const child of children) child.parentElement = node;
+  return node;
+}
+
+function doc({ registry = null, marked = [] } = {}) {
+  return {
+    querySelector: (selector) =>
+      selector === "script[data-lavish-revisions]" && registry !== null ? { textContent: registry } : null,
+    querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? marked : []),
+  };
+}
+
+function marked(id, { tag = "p", text = "" } = {}) {
+  return element(tag, { "data-lavish-revision": id, textContent: text });
+}
+
+function registryJson(entries) {
+  return JSON.stringify(entries);
+}
+
+test("an artifact with no registry declares no revisions and no marks", () => {
+  const result = readArtifactRevisions(doc());
+
+  assert.deepEqual(result.revisions, []);
+  assert.deepEqual(result.marks, []);
+});
+
+test("a reload that changed nothing marks nothing, even with a registry present", () => {
+  const result = readArtifactRevisions(doc({ registry: registryJson([{ id: "r1", label: "First pass" }]) }));
+
+  assert.equal(result.revisions.length, 1);
+  assert.equal(result.revisions[0].mark_count, 0);
+  assert.deepEqual(result.marks, []);
+});
+
+test("an edited block is attributed to the revision that claims it", () => {
+  const result = readArtifactRevisions(
+    doc({
+      registry: registryJson([{ id: "r1", label: "First pass" }]),
+      marked: [marked("r1", { tag: "section", text: "  Pricing   changed  " })],
+    }),
+  );
+
+  assert.equal(result.marks.length, 1);
+  assert.equal(result.marks[0].revision_id, "r1");
+  assert.equal(result.marks[0].tag, "section");
+  assert.equal(result.marks[0].excerpt, "Pricing changed");
+  assert.equal(result.revisions[0].mark_count, 1);
+});
+
+test("a block added in a later revision is attributed to that revision, not the earlier one", () => {
+  const result = readArtifactRevisions(
+    doc({
+      registry: registryJson([
+        { id: "r1", label: "First pass" },
+        { id: "r2", label: "Second pass" },
+      ]),
+      marked: [marked("r1"), marked("r2"), marked("r2")],
+    }),
+  );
+
+  assert.deepEqual(
+    result.revisions.map((revision) => [revision.id, revision.mark_count]),
+    [
+      ["r1", 1],
+      ["r2", 2],
+    ],
+  );
+  assert.deepEqual(
+    result.marks.map((mark) => mark.revision_id),
+    ["r1", "r2", "r2"],
+  );
+});
+
+test("a mark naming a revision the registry never declared is left out rather than shown unattributed", () => {
+  const result = readArtifactRevisions({
+    ...doc({ registry: registryJson([{ id: "r1" }]) }),
+    querySelectorAll: () => [marked("r9")],
+  });
+
+  assert.deepEqual(result.marks, []);
+  assert.equal(result.revisions[0].mark_count, 0);
+});
+
+test("a malformed registry costs the reader a legend, not the page", () => {
+  for (const registry of ["{not json", '{"id":"r1"}', "null", '"r1"', "[]", "   "]) {
+    const result = readArtifactRevisions(doc({ registry, marked: [marked("r1")] }));
+    assert.deepEqual(result.revisions, [], `registry ${registry} should yield no revisions`);
+    assert.deepEqual(result.marks, [], `registry ${registry} should yield no marks`);
+  }
+});
+
+test("a registry larger than the byte cap is ignored instead of parsed", () => {
+  const limits = revisionLimits();
+  const filler = "x".repeat(limits.registryBytes);
+  const registry = registryJson([{ id: "r1", summary: filler }]);
+  assert.ok(registry.length > limits.registryBytes);
+
+  assert.deepEqual(parseRevisionRegistry(doc({ registry })), []);
+});
+
+test("duplicate and unaddressable revision ids are dropped, keeping the first of each id", () => {
+  const revisions = parseRevisionRegistry(
+    doc({
+      registry: registryJson([
+        { id: "r1", label: "kept" },
+        { id: "r1", label: "duplicate" },
+        { id: "  ", label: "blank" },
+        { id: "has space", label: "unaddressable" },
+        { label: "no id" },
+        { id: "r2", label: "also kept" },
+      ]),
+    }),
+  );
+
+  assert.deepEqual(
+    revisions.map((revision) => [revision.id, revision.label]),
+    [
+      ["r1", "kept"],
+      ["r2", "also kept"],
+    ],
+  );
+});
+
+test("rejected entries count against the scan budget, so a huge registry cannot walk the main thread", () => {
+  const limits = revisionLimits();
+  const rejected = Array.from({ length: limits.rawEntries }, () => ({ id: "dup" }));
+  const reachableOnlyIfUnbounded = Array.from({ length: limits.entries }, (_, index) => ({ id: `late${index}` }));
+  const revisions = parseRevisionRegistry(doc({ registry: registryJson([...rejected, ...reachableOnlyIfUnbounded]) }));
+
+  // The first entry is the only accepted one; everything after it is a
+  // duplicate, and the scan stops at the raw budget before the late ids.
+  assert.deepEqual(
+    revisions.map((revision) => revision.id),
+    ["dup"],
+  );
+});
+
+test("the registry yields at most the number of rows the legend can distinguish", () => {
+  const limits = revisionLimits();
+  const entries = Array.from({ length: limits.entries + 4 }, (_, index) => ({ id: `r${index}` }));
+
+  assert.equal(parseRevisionRegistry(doc({ registry: registryJson(entries) })).length, limits.entries);
+});
+
+test("marks stop at the cap so one artifact cannot flood the legend", () => {
+  const limits = revisionLimits();
+  const marks = collectRevisionMarks(doc({ marked: Array.from({ length: limits.marks + 50 }, () => marked("r1")) }), [
+    { id: "r1", mark_count: 0 },
+  ]);
+
+  assert.equal(marks.length, limits.marks);
+});
+
+test("every palette entry is distinguishable without colour", () => {
+  const signals = revisionPalette().map((entry) => `${entry.borderStyle}/${entry.pattern}`);
+
+  assert.equal(new Set(signals).size, signals.length);
+  assert.equal(new Set(revisionPalette().map((entry) => entry.hex)).size, signals.length);
+});
+
+test("a revision keeps its colour for as long as its registry position holds, and the palette cycles", () => {
+  const palette = revisionPalette();
+
+  assert.deepEqual(revisionPresentationForIndex(0), palette[0]);
+  assert.deepEqual(revisionPresentationForIndex(palette.length), palette[0]);
+  assert.deepEqual(revisionPresentationForIndex(-1), palette[0]);
+  assert.deepEqual(revisionPresentationForIndex(2), palette[2]);
+});
+
+test("an author-set id wins the selector because it survives edits to the surrounding tree", () => {
+  const target = element("section", { id: "pricing" });
+  const body = element("body", {}, [element("header"), target]);
+  element("html", {}, [body]);
+
+  assert.equal(revisionSelectorFor(target), "#pricing");
+});
+
+test("an unlabelled block gets an nth-of-type chain that resolves back to it", () => {
+  const first = element("p");
+  const second = element("p");
+  const body = element("body", {}, [first, second]);
+  element("html", {}, [body]);
+
+  assert.equal(revisionSelectorFor(second), "html > body > p:nth-of-type(2)");
+  assert.equal(revisionSelectorFor(first), "html > body > p:nth-of-type(1)");
+});
+
+test("an id that is not a bare CSS identifier falls back to the structural chain", () => {
+  const target = element("section", { id: "2 pricing" });
+  const body = element("body", {}, [target]);
+  element("html", {}, [body]);
+
+  assert.equal(revisionSelectorFor(target), "html > body > section");
+});
+
+test("normalizeRevisionEntry caps each field and falls back to the id for a missing label", () => {
+  const limits = revisionLimits();
+  const entry = normalizeRevisionEntry(
+    { id: "r1", summary: "s".repeat(limits.summary + 40), timestamp: "t".repeat(limits.timestamp + 10) },
+    0,
+  );
+
+  assert.equal(entry.label, "r1");
+  assert.equal(entry.summary.length, limits.summary);
+  assert.equal(entry.timestamp.length, limits.timestamp);
+  assert.equal(entry.mark_count, 0);
+});
+
+test("normalizeRevisionEntry refuses anything that is not an object with a usable id", () => {
+  for (const value of [null, undefined, 3, "r1", [], { id: "" }, { id: " r 1 " }]) {
+    assert.equal(normalizeRevisionEntry(value, 0), null);
+  }
+});
+
+test("isAddressableRevisionId matches what a data attribute can carry back", () => {
+  assert.equal(isAddressableRevisionId("r1"), true);
+  assert.equal(isAddressableRevisionId(""), false);
+  assert.equal(isAddressableRevisionId(" r1"), false);
+  assert.equal(isAddressableRevisionId("r 1"), false);
+  assert.equal(isAddressableRevisionId(null), false);
+});

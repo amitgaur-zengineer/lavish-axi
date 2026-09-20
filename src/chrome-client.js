@@ -178,6 +178,12 @@ const warningsSelectAll = /** @type {HTMLInputElement} */ (document.getElementBy
 const warningsSelected = /** @type {HTMLSpanElement} */ (document.getElementById("warningsSelected"));
 const warningsList = /** @type {HTMLDivElement} */ (document.getElementById("warningsList"));
 const warningsQueueButton = /** @type {HTMLButtonElement} */ (document.getElementById("warningsQueueButton"));
+const revisionsWrap = /** @type {HTMLDivElement} */ (document.getElementById("revisionsWrap"));
+const revisionsButton = /** @type {HTMLButtonElement} */ (document.getElementById("revisionsButton"));
+const revisionsCount = /** @type {HTMLSpanElement} */ (document.getElementById("revisionsCount"));
+const revisionsDrawer = /** @type {HTMLDivElement} */ (document.getElementById("revisionsDrawer"));
+const revisionsSummary = /** @type {HTMLParagraphElement} */ (document.getElementById("revisionsSummary"));
+const revisionsList = /** @type {HTMLDivElement} */ (document.getElementById("revisionsList"));
 const sendHint = /** @type {HTMLDivElement} */ (document.getElementById("sendHint"));
 const whiteboardOverlay = /** @type {HTMLDivElement} */ (document.getElementById("whiteboardOverlay"));
 const whiteboardFrame = /** @type {HTMLIFrameElement} */ (document.getElementById("whiteboardFrame"));
@@ -2431,6 +2437,232 @@ function revealWarning(warning) {
   postToFrame({ type: "lavish:revealElement", selector: warning.selector });
 }
 
+// ---------------------------------------------------------------------------
+// Revision legend
+//
+// The agent declares what it changed in the artifact HTML itself (a
+// `data-lavish-revisions` registry plus `data-lavish-revision` marks); the SDK
+// reads it and posts it here. The legend lives entirely in the chrome, so the
+// served artifact still matches the file on disk - Lavish never paints the
+// change indicator into the page. Reveal borrows the same transient marker the
+// layout-issues drawer uses, and only when the reader asks for it.
+
+// The payload crosses postMessage from a sandboxed frame rendering author
+// content, so it is untrusted here whatever built it. These bound what is
+// examined, not what is accepted: capping accepted rows alone would let a
+// registry of ten thousand records walk the whole array on the chrome's main
+// thread before yielding its handful of rows.
+const REVISION_LIMITS = {
+  entries: 8,
+  rawEntries: 256,
+  marks: 200,
+  rawMarks: 2000,
+  id: 60,
+  label: 80,
+  summary: 400,
+  timestamp: 40,
+  excerpt: 120,
+  selector: 400,
+};
+const REVISION_BORDER_STYLES = ["solid", "dashed", "dotted", "double"];
+const REVISION_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** @type {any[]} */
+let revisionEntries = [];
+/** @type {any[]} */
+let revisionMarks = [];
+/** @type {Map<string, number>} */
+const revisionRevealCursor = new Map();
+let revisionsDrawerOpen = false;
+
+function revisionText(value, max) {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  const text = String(value).trim();
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+function revisionPatternFill(pattern) {
+  if (pattern === "diagonal") return "repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px)";
+  if (pattern === "dots") return "radial-gradient(currentColor 1px, transparent 1px)";
+  return "";
+}
+
+// Re-derive every rendered value from a value the chrome itself owns. A colour
+// or border style taken straight from the message would be an artifact-supplied
+// CSS value, and the swatch is the one place it would land in a style property.
+function normalizeRevisionMessage(msg) {
+  const rawRevisions = Array.isArray(msg && msg.revisions) ? msg.revisions : [];
+  const revisions = [];
+  const byId = new Map();
+  let examined = 0;
+  for (const raw of rawRevisions) {
+    if (examined >= REVISION_LIMITS.rawEntries || revisions.length >= REVISION_LIMITS.entries) break;
+    examined += 1;
+    if (!raw || typeof raw !== "object") continue;
+    const id = revisionText(raw.id, REVISION_LIMITS.id);
+    if (!id || /\s/.test(id) || byId.has(id)) continue;
+    const color = REVISION_COLOR_RE.test(String(raw.color || "")) ? String(raw.color) : "#0072b2";
+    const borderStyle = REVISION_BORDER_STYLES.includes(String(raw.border_style)) ? String(raw.border_style) : "solid";
+    const entry = {
+      id,
+      label: revisionText(raw.label, REVISION_LIMITS.label) || id,
+      timestamp: revisionText(raw.timestamp, REVISION_LIMITS.timestamp),
+      summary: revisionText(raw.summary, REVISION_LIMITS.summary),
+      color,
+      borderStyle,
+      pattern: revisionPatternFill(raw.pattern),
+      marks: [],
+    };
+    byId.set(id, entry);
+    revisions.push(entry);
+  }
+
+  const rawMarks = Array.isArray(msg && msg.marks) ? msg.marks : [];
+  const marks = [];
+  examined = 0;
+  for (const raw of rawMarks) {
+    if (examined >= REVISION_LIMITS.rawMarks || marks.length >= REVISION_LIMITS.marks) break;
+    examined += 1;
+    if (!raw || typeof raw !== "object") continue;
+    const revisionId = revisionText(raw.revision_id, REVISION_LIMITS.id);
+    const selector = revisionText(raw.selector, REVISION_LIMITS.selector);
+    const owner = byId.get(revisionId);
+    if (!owner || !selector) continue;
+    const mark = {
+      revisionId,
+      selector,
+      tag: revisionText(raw.tag, 40).toLowerCase(),
+      excerpt: revisionText(raw.excerpt, REVISION_LIMITS.excerpt),
+    };
+    owner.marks.push(mark);
+    marks.push(mark);
+  }
+
+  return { revisions, marks };
+}
+
+function resetRevisionLegend() {
+  revisionEntries = [];
+  revisionMarks = [];
+  revisionRevealCursor.clear();
+  renderRevisionLegend();
+}
+
+function applyRevisionMessage(msg) {
+  const normalized = normalizeRevisionMessage(msg);
+  revisionEntries = normalized.revisions;
+  revisionMarks = normalized.marks;
+  for (const id of [...revisionRevealCursor.keys()]) {
+    if (!revisionEntries.some((entry) => entry.id === id)) revisionRevealCursor.delete(id);
+  }
+  renderRevisionLegend();
+}
+
+function revisionMarkSummary(entry) {
+  if (entry.marks.length === 0) return "no marked blocks";
+  return entry.marks.length === 1 ? "1 marked block" : entry.marks.length + " marked blocks";
+}
+
+function buildRevisionRow(entry) {
+  const row = document.createElement("div");
+  row.className = "revision-row";
+
+  const swatch = document.createElement("span");
+  swatch.className = "revision-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  swatch.style.color = entry.color;
+  swatch.style.borderColor = entry.color;
+  swatch.style.borderStyle = entry.borderStyle;
+  if (entry.pattern) swatch.style.backgroundImage = entry.pattern;
+  row.appendChild(swatch);
+
+  const body = document.createElement("div");
+  body.className = "revision-body";
+
+  const head = document.createElement("div");
+  head.className = "revision-head";
+  const label = document.createElement("span");
+  label.className = "revision-label";
+  label.textContent = entry.label;
+  head.appendChild(label);
+  if (entry.timestamp) {
+    const time = document.createElement("span");
+    time.className = "revision-time";
+    time.textContent = entry.timestamp;
+    head.appendChild(time);
+  }
+  body.appendChild(head);
+
+  if (entry.summary) {
+    const summary = document.createElement("p");
+    summary.className = "revision-summary";
+    summary.textContent = entry.summary;
+    body.appendChild(summary);
+  }
+
+  const foot = document.createElement("div");
+  foot.className = "revision-foot";
+  const count = document.createElement("span");
+  count.className = "revision-marks";
+  count.textContent = revisionMarkSummary(entry);
+  foot.appendChild(count);
+  if (entry.marks.length > 0) {
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.className = "revision-reveal";
+    reveal.dataset.revisionId = entry.id;
+    const position = (revisionRevealCursor.get(entry.id) || 0) % entry.marks.length;
+    reveal.textContent = entry.marks.length === 1 ? "Reveal" : "Reveal " + (position + 1) + "/" + entry.marks.length;
+    reveal.setAttribute("aria-label", "Reveal the next block changed in " + entry.label);
+    foot.appendChild(reveal);
+  }
+  body.appendChild(foot);
+
+  row.appendChild(body);
+  return row;
+}
+
+function renderRevisionLegend() {
+  if (!revisionsWrap) return;
+  const count = revisionEntries.length;
+  revisionsWrap.hidden = count === 0 || ended;
+  if (revisionsWrap.hidden && revisionsDrawerOpen) setRevisionsDrawerOpen(false);
+  revisionsCount.textContent = String(count);
+  revisionsButton.setAttribute("aria-label", count === 1 ? "1 revision" : count + " revisions");
+  revisionsSummary.textContent =
+    (count === 1 ? "1 revision" : count + " revisions") +
+    " · " +
+    (revisionMarks.length === 1 ? "1 marked block" : revisionMarks.length + " marked blocks");
+
+  revisionsList.textContent = "";
+  for (const entry of revisionEntries) revisionsList.appendChild(buildRevisionRow(entry));
+}
+
+function setRevisionsDrawerOpen(open) {
+  revisionsDrawerOpen = open && !ended;
+  revisionsDrawer.hidden = !revisionsDrawerOpen;
+  revisionsButton.setAttribute("aria-expanded", String(revisionsDrawerOpen));
+  if (revisionsDrawerOpen) closeMenus();
+}
+
+function closeRevisionsDrawer({ restoreFocus = false } = {}) {
+  if (!revisionsDrawerOpen) return;
+  setRevisionsDrawerOpen(false);
+  if (restoreFocus) revisionsButton.focus();
+}
+
+// Step through a revision's marked blocks one at a time. The existing reveal
+// path flashes one element and clears the previous marker, so a revision that
+// touched several blocks is walked rather than lit up all at once.
+function revealNextRevisionMark(id) {
+  const entry = revisionEntries.find((candidate) => candidate.id === id);
+  if (!entry || entry.marks.length === 0) return;
+  const position = (revisionRevealCursor.get(id) || 0) % entry.marks.length;
+  postToFrame({ type: "lavish:revealElement", selector: entry.marks[position].selector });
+  revisionRevealCursor.set(id, (position + 1) % entry.marks.length);
+  renderRevisionLegend();
+}
+
 async function dismissWarning(id) {
   try {
     const response = await fetch("/api/" + key + "/layout-warnings/dismiss", {
@@ -2530,6 +2762,8 @@ function markSessionEnded() {
   closeShareDialog();
   closeWarningsDrawer();
   renderWarnings();
+  closeRevisionsDrawer();
+  renderRevisionLegend();
   closeWhiteboard();
   annotationSwitch.disabled = true;
   moreButton.disabled = true;
@@ -2833,6 +3067,9 @@ function scheduleArtifactLoadRecovery() {
 // exhausted counter forward would have no retries left at all for the next outage.
 async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   cancelArtifactLoadRecovery();
+  // The next document reports its own registry once it loads; until then the
+  // previous revision's legend would point at blocks that may no longer exist.
+  resetRevisionLegend();
   if (!recoveryRetry) artifactLoadRecoveryAttempt = 0;
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
@@ -3688,6 +3925,7 @@ window.addEventListener("message", (event) => {
   // chrome cannot see every live reference, so reclamation is the sweeper's job.
   if (msg.type === "lavish:sendQueuedPrompts") sendQueued();
   if (msg.type === "lavish:endSession") endSession();
+  if (msg.type === "lavish:revisions") applyRevisionMessage(msg);
   if (msg.type === "lavish:toggleAnnotationMode") toggleAnnotationMode();
 });
 
@@ -3831,9 +4069,19 @@ sendButton.onclick = () => sendQueued(false);
 sendAndEndButton.onclick = () => sendQueued(true);
 moreButton.onclick = () => {
   closeWarningsDrawer();
+  closeRevisionsDrawer();
   toggleMenu(moreButton, moreMenu);
 };
 warningsButton.onclick = toggleWarningsDrawer;
+revisionsButton.onclick = () => {
+  closeWarningsDrawer();
+  setRevisionsDrawerOpen(revisionsDrawer.hidden);
+};
+revisionsList.addEventListener("click", (event) => {
+  const button = /** @type {any} */ (event.target)?.closest?.(".revision-reveal");
+  const id = button && button.dataset ? String(button.dataset.revisionId || "") : "";
+  if (id) revealNextRevisionMark(id);
+});
 warningsSelectAll.onchange = toggleSelectAllWarnings;
 warningsQueueButton.onclick = queueSelectedWarningFixes;
 chatAttachButton.onclick = () => chatAttachInput.click();
@@ -3963,12 +4211,17 @@ document.addEventListener("mousedown", (event) => {
   const target = /** @type {Node} */ (event.target);
   if (!moreMenu.hidden && !moreWrap.contains(target)) setMenuOpen(moreButton, moreMenu, false);
   if (warningsDrawerOpen && !warningsWrap.contains(target)) closeWarningsDrawer();
+  if (revisionsDrawerOpen && !revisionsWrap.contains(target)) closeRevisionsDrawer();
 });
 // A non-modal popover closes when focus leaves it, so keyboard users are never stranded inside a
 // panel they cannot see the end of.
 warningsWrap.addEventListener("focusout", (event) => {
   const next = /** @type {Node | null} */ (event.relatedTarget);
   if (warningsDrawerOpen && next && !warningsWrap.contains(next)) closeWarningsDrawer();
+});
+revisionsWrap.addEventListener("focusout", (event) => {
+  const next = /** @type {Node | null} */ (event.relatedTarget);
+  if (revisionsDrawerOpen && next && !revisionsWrap.contains(next)) closeRevisionsDrawer();
 });
 whiteboardCloseButton.onclick = closeWhiteboard;
 document.addEventListener("keydown", (event) => {
@@ -3977,6 +4230,8 @@ document.addEventListener("keydown", (event) => {
       closeWhiteboard();
     } else if (!shareDialog.hidden) {
       closeShareDialog();
+    } else if (revisionsDrawerOpen) {
+      closeRevisionsDrawer({ restoreFocus: true });
     } else if (warningsDrawerOpen) {
       closeWarningsDrawer({ restoreFocus: true });
     } else if (!moreMenu.hidden) {
