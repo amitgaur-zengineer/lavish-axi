@@ -6675,15 +6675,35 @@ test("GET / session index keeps the original landing copy when no sessions exist
 });
 
 test("GET / session index escapes file paths in session rows", async () => {
+  // `<` and `>` are illegal in a real filename on Windows, so this seeds state.json
+  // directly (as the ended-session tests above do) instead of opening a session
+  // against an actual file with that name - state.json can carry any string
+  // regardless of the host filesystem's naming rules (e.g. a session recorded on
+  // a different OS, or hand-edited state), and the render path under test only
+  // reads that stored string.
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "x<img src=x>.html");
-  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(
+    path.join(dir, "state.json"),
+    `${JSON.stringify({
+      sessions: {
+        [sessionKey(artifact)]: {
+          key: sessionKey(artifact),
+          file: artifact,
+          url: `http://localhost:0/session/${sessionKey(artifact)}`,
+          status: "open",
+          pending_prompts: 0,
+          prompts: [],
+          dom_snapshot: "",
+          chat: [],
+          updated_at: new Date().toISOString(),
+        },
+      },
+    })}\n`,
+  );
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
-    const base = `http://127.0.0.1:${server.port}`;
-    await openIndexSession(base, artifact);
-
-    const index = await fetch(`${base}/`).then((response) => response.text());
+    const index = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
     assert.ok(!index.includes("<img src=x>"), "a file name must never render as markup");
     assert.ok(index.includes("&lt;img src=x&gt;.html"), "the escaped file name still renders");
   } finally {
