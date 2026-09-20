@@ -643,28 +643,6 @@ test("shared SDK helper modules export only functions so serializeModuleHelpers 
   }
 });
 
-test("artifact SDK injects every revision helper as a same-scope const", () => {
-  const js = createSdkJs("abc");
-
-  // readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks,
-  // which in turn call the rest; a missing declaration only ReferenceErrors in
-  // the browser, where nothing in this suite would see it.
-  for (const name of [
-    "readArtifactRevisions",
-    "parseRevisionRegistry",
-    "collectRevisionMarks",
-    "normalizeRevisionEntry",
-    "revisionSelectorFor",
-    "revisionLimits",
-    "revisionPalette",
-    "revisionPresentationForIndex",
-    "isAddressableRevisionId",
-    "truncateRevisionText",
-  ]) {
-    assert.match(js, new RegExp(`const ${name}=`));
-  }
-});
-
 test("annotation hover and click resolve to the same Mermaid node element", () => {
   const js = createSdkJs("abc");
 

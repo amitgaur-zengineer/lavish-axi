@@ -2452,11 +2452,17 @@ function revealWarning(warning) {
 // examined, not what is accepted: capping accepted rows alone would let a
 // registry of ten thousand records walk the whole array on the chrome's main
 // thread before yielding its handful of rows.
+// Server-owned, injected into the session JSON from src/artifact-revisions.js.
+// The swatch is presentation the chrome owes the reader, not something the
+// artifact gets a say in, so nothing about it is read from the message.
+const REVISION_PALETTE = (Array.isArray(sessionData.revisionPalette) ? sessionData.revisionPalette : []).filter(
+  (entry) => entry && /^#[0-9a-fA-F]{6}$/.test(String(entry.hex)),
+);
 const REVISION_LIMITS = {
-  // Matches the SDK's palette length (src/artifact-revisions.js). The chrome is
-  // served raw and cannot import it, so the number is repeated here; the
-  // palette-length test in test/artifact-revisions.test.js fails if they drift.
-  entries: 6,
+  // Derived from the server-injected palette (src/artifact-revisions.js) rather than a
+  // second hardcoded number, so the two can never drift; falls back to 6 only if the
+  // palette itself came through empty.
+  entries: REVISION_PALETTE.length > 0 ? REVISION_PALETTE.length : 6,
   rawEntries: 256,
   marks: 200,
   rawMarks: 2000,
@@ -2467,12 +2473,6 @@ const REVISION_LIMITS = {
   excerpt: 120,
   selector: 400,
 };
-// Server-owned, injected into the session JSON from src/artifact-revisions.js.
-// The swatch is presentation the chrome owes the reader, not something the
-// artifact gets a say in, so nothing about it is read from the message.
-const REVISION_PALETTE = (Array.isArray(sessionData.revisionPalette) ? sessionData.revisionPalette : []).filter(
-  (entry) => entry && /^#[0-9a-fA-F]{6}$/.test(String(entry.hex)),
-);
 const REVISION_BORDER_STYLES = ["solid", "dashed", "dotted", "double"];
 
 /** @type {any[]} */
@@ -3100,13 +3100,15 @@ function scheduleArtifactLoadRecovery() {
 // exhausted counter forward would have no retries left at all for the next outage.
 async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   cancelArtifactLoadRecovery();
-  // The next document reports its own registry once it loads; until then the
-  // previous revision's legend would point at blocks that may no longer exist.
-  resetRevisionLegend();
   if (!recoveryRetry) artifactLoadRecoveryAttempt = 0;
   clearTimeout(artifactSilenceTimer);
   // The iframe is sandboxed, so reload by resetting the iframe URL from chrome.
   if (!artifactSrc) {
+    // The next document reports its own registry once it loads; until then the
+    // previous revision's legend would point at blocks that may no longer exist.
+    // Only clear it here, right before the frame is actually replaced - a preserved
+    // load (superseded/out-of-order/exhausted retries below) must leave it intact.
+    resetRevisionLegend();
     startLayoutGateCycle();
     const currentSrc = frame.src || "about:blank";
     frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
@@ -3223,6 +3225,9 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   inlineWhiteboardChannels.clear();
   setHandoffSuperseded(false);
   startLayoutGateCycle();
+  // The next document reports its own registry once it loads; until then the
+  // previous revision's legend would point at blocks that may no longer exist.
+  resetRevisionLegend();
   frame.src = artifactFrameSrcForLoad({ revision, token });
   return true;
 }
