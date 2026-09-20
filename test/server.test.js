@@ -20,6 +20,7 @@ import {
   CHROME_LAYOUT_GATE_MAX_HOLD_MS,
   createChromeHtml,
   createSdkJs,
+  createSessionsIndexHtml,
   displayPathParts,
   exportContentDisposition,
   extractArtifactHead,
@@ -6706,6 +6707,45 @@ test("GET / session index escapes file paths in session rows", async () => {
     const index = await fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.text());
     assert.ok(!index.includes("<img src=x>"), "a file name must never render as markup");
     assert.ok(index.includes("&lt;img src=x&gt;.html"), "the escaped file name still renders");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET / session index coerces a nonnumeric stored pending_prompts to a number", () => {
+  // Greptile P2: state.json is not schema-validated, so a malformed pending_prompts must never
+  // interpolate as markup - it renders as an integer, like any other pending count.
+  const html = createSessionsIndexHtml({
+    sessions: [
+      {
+        key: "deadbeefdeadbeef",
+        file: "/tmp/lavish/a.html",
+        status: "open",
+        updated_at: new Date(0).toISOString(),
+        pending_prompts: "<img src=x>",
+      },
+    ],
+    listeners: new Map(),
+    page: 1,
+  });
+  assert.ok(!html.includes("<img src=x>"), "a stored nonnumeric pending_prompts must never render as markup");
+  assert.match(html, /\b0 pending\b/, "a nonnumeric pending_prompts coerces to 0");
+});
+
+test("GET / session index falls back to the landing card when state.json is unreadable", async () => {
+  // Greptile P2: a corrupt or unreadable state file must not 500 the landing page; the plain
+  // card keeps working and discloses nothing.
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    await writeFile(path.join(dir, "state.json"), "not json");
+    const base = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${base}/`);
+    assert.equal(response.status, 200, "a corrupt state.json never 500s the landing page");
+    const html = await response.text();
+    assert.match(html, /Lavish Editor is running/);
+    assert.ok(!html.includes("<ul"), "the fallback is the plain card, not a broken index");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

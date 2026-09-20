@@ -648,7 +648,16 @@ export async function serve({
       res.type("html").send(createLandingHtml());
       return;
     }
-    const sessions = await store.listSessions();
+    let sessions;
+    try {
+      sessions = await store.listSessions();
+    } catch {
+      // A corrupt or unreadable state.json must not take the landing page down with it: the
+      // plain card keeps serving and discloses nothing (Greptile P2).
+      logEvent?.("session index fell back to landing card: state unreadable");
+      res.type("html").send(createLandingHtml());
+      return;
+    }
     const listeners = new Map([...activePolls].map(([key, holder]) => [key, listenerLabel(holder)]));
     const page = Math.max(1, Number.parseInt(String(req.query.page || "1"), 10) || 1);
     res.type("html").send(createSessionsIndexHtml({ sessions, listeners, page }));
@@ -2215,7 +2224,7 @@ const ENDED_HISTORY_LIMIT = 20;
 // paginate server-side; recently ended sessions render greyed WITHOUT links and only on page
 // 1, because reopening a user-ended session is the CLI's `--reopen`, never the browser.
 // Every stored value renders through escapeHtml - state.json content is never markup.
-function createSessionsIndexHtml({ sessions, listeners, page }) {
+export function createSessionsIndexHtml({ sessions, listeners, page }) {
   const byUpdatedDesc = (a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
   const open = sessions.filter((session) => session.status !== "ended").sort(byUpdatedDesc);
   const ended = sessions
@@ -2231,10 +2240,16 @@ function createSessionsIndexHtml({ sessions, listeners, page }) {
   const pageCount = Math.max(1, Math.ceil(open.length / SESSIONS_INDEX_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const pageSessions = open.slice((currentPage - 1) * SESSIONS_INDEX_PAGE_SIZE, currentPage * SESSIONS_INDEX_PAGE_SIZE);
+  // state.json is not schema-validated, so a stored value interpolates only after coercing to a
+  // bounded integer - a nonnumeric pending_prompts can never render as markup (Greptile P2).
+  const pendingCount = (session) => {
+    const value = Number(session.pending_prompts);
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  };
   const openRows = pageSessions
     .map(
       (session) =>
-        `<li class="session"><a href="/session/${encodeURIComponent(session.key)}">Open</a> <span class="file">${escapeHtml(session.file)}</span> <span class="status">${escapeHtml(session.status)}</span> <span class="pending">${session.pending_prompts || 0} pending</span> <span class="listener">${escapeHtml(listeners.get(session.key) || "none")}</span></li>`,
+        `<li class="session"><a href="/session/${encodeURIComponent(session.key)}">Open</a> <span class="file">${escapeHtml(session.file)}</span> <span class="status">${escapeHtml(session.status)}</span> <span class="pending">${pendingCount(session)} pending</span> <span class="listener">${escapeHtml(listeners.get(session.key) || "none")}</span></li>`,
     )
     .join("");
   const nav = [
@@ -2251,7 +2266,7 @@ function createSessionsIndexHtml({ sessions, listeners, page }) {
       ? ended
           .map(
             (session) =>
-              `<li class="session ended"><span class="file">${escapeHtml(session.file)}</span> <span class="status">ended</span> <span class="pending">${session.pending_prompts || 0} pending</span></li>`,
+              `<li class="session ended"><span class="file">${escapeHtml(session.file)}</span> <span class="status">ended</span> <span class="pending">${pendingCount(session)} pending</span></li>`,
           )
           .join("")
       : "";
