@@ -640,6 +640,9 @@ body.lavish {
   display: flex;
   align-items: center;
 }
+.revisions-wrap[hidden] {
+  display: none;
+}
 
 .revisions-button {
   display: inline-flex;
