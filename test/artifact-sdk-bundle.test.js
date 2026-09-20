@@ -157,7 +157,8 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       removeEventListener() {},
       createElement,
       getElementById: () => null,
-      querySelector: (selector) => (selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector)),
+      querySelector: (selector) =>
+        selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
       querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
       getSelection: () => null,
     },
