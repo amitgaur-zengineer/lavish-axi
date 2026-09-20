@@ -6496,7 +6496,10 @@ test("GET / session index lists an open session with its status, pending count, 
     assert.match(index, /<h1>Lavish Editor is running<\/h1>/);
     assert.ok(index.includes("artifact.html"), "the index names the session's file");
     assert.match(index, /\bopen\b/, "the row shows the session status");
-    assert.ok(index.includes(`href="${opened.url}"`), "open session rows link to their session URL");
+    assert.ok(
+      index.includes(`href="/session/${opened.key}"`),
+      "open session rows link to the session page on this server's origin",
+    );
     assert.match(index, />Open<\/a>/, "the link is labelled Open");
     assert.match(index, /0 pending/, "a session with no queued feedback shows a zero pending count");
 

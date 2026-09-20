@@ -2225,7 +2225,7 @@ function createSessionsIndexHtml({ sessions, listeners, page }) {
   const openRows = pageSessions
     .map(
       (session) =>
-        `<li class="session"><a href="${escapeHtml(session.url)}">Open</a> <span class="file">${escapeHtml(session.file)}</span> <span class="status">${escapeHtml(session.status)}</span> <span class="pending">${session.pending_prompts || 0} pending</span> <span class="listener">${escapeHtml(listeners.get(session.key) || "none")}</span></li>`,
+        `<li class="session"><a href="/session/${encodeURIComponent(session.key)}">Open</a> <span class="file">${escapeHtml(session.file)}</span> <span class="status">${escapeHtml(session.status)}</span> <span class="pending">${session.pending_prompts || 0} pending</span> <span class="listener">${escapeHtml(listeners.get(session.key) || "none")}</span></li>`,
     )
     .join("");
   const nav = [
