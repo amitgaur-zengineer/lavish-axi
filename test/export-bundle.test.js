@@ -2812,7 +2812,7 @@ test("redacts escaped CSS resource identifiers and numeric file entities without
   );
 });
 
-test("inlines local object embed and image input resources while warning for iframes", async () => {
+test("inlines local object embed image input and iframe resources", async () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
   const svg = "<svg></svg>";
   const html =
@@ -2833,10 +2833,156 @@ test("inlines local object embed and image input resources while warning for ifr
   assert.match(out, /<embed src="data:application\/pdf;base64,JVBERg==">/);
   assert.match(out, /<input type="image" src="data:image\/png;base64,iVBORw==">/);
   assert.match(out, /<input type="text" src="ignored\.png">/);
-  assert.match(out, /<iframe src="panel\.html"><\/iframe>/);
+  assert.match(out, /<iframe srcdoc="&lt;p>Nested&lt;\/p>"><\/iframe>/);
   assert.deepEqual(
     warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
-    [{ kind: "unsupported-frame", ref: "panel.html" }],
+    [],
+  );
+});
+
+test("inlines a local iframe document as srcdoc with recursively bundled child assets", async () => {
+  const html = '<!doctype html><html><body><iframe src="panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/panel.html":
+        '<html><head><link rel="stylesheet" href="panel.css"></head><body><p title="a &quot;b&quot;">Nested</p></body></html>',
+      "/art/panel.css": "p{background:url(bg.png)}",
+      "/art/bg.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    }),
+  });
+
+  assert.doesNotMatch(out, /<iframe src=/);
+  assert.match(
+    out,
+    /<iframe srcdoc="&lt;html>&lt;head>&lt;style>p\{background:url\(data:image\/png;base64,iVBORw==\)\}&lt;\/style>/,
+  );
+  assert.match(out, /&lt;p title=&quot;a &amp;quot;b&amp;quot;&quot;>Nested&lt;\/p>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
+test("resolves iframe child references against the child document directory", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html = '<!doctype html><html><body><iframe src="frames/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(portablePathKey(absPath));
+      return localReader({
+        "/art/frames/panel.html": '<img src="img.png">',
+        "/art/frames/img.png": png,
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/frames/panel.html", "/art/frames/img.png"]);
+  assert.match(out, /<iframe srcdoc="&lt;img src=&quot;data:image\/png;base64,iVBORw==&quot;>"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
+test("resolves iframe child references against the child document base href", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const readPaths = [];
+  const html = '<!doctype html><html><body><iframe src="frames/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: async (absPath) => {
+      readPaths.push(portablePathKey(absPath));
+      return localReader({
+        "/art/frames/panel.html": '<html><head><base href="assets/"></head><body><img src="logo.png"></body></html>',
+        "/art/frames/assets/logo.png": png,
+      })(absPath);
+    },
+  });
+
+  assert.deepEqual(readPaths, ["/art/frames/panel.html", "/art/frames/assets/logo.png"]);
+  assert.match(out, /<iframe srcdoc="[^"]*data:image\/png;base64,iVBORw==/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
+test("warns and leaves the reference when iframe nesting exceeds the inline depth", async () => {
+  const html = '<!doctype html><html><body><iframe src="outer.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    maxDepth: 1,
+    readLocalFile: localReader({
+      "/art/outer.html": '<iframe src="inner.html"></iframe>',
+      "/art/inner.html": "<p>Deep</p>",
+    }),
+  });
+
+  assert.match(out, /<iframe srcdoc="&lt;iframe src=&quot;inner\.html&quot;>&lt;\/iframe>"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unsupported-frame", ref: "inner.html" }],
+  );
+});
+
+test("leaves remote iframe src references unchanged", async () => {
+  const html =
+    '<!doctype html><html><body><iframe src="https://example.com/panel.html"></iframe>' +
+    '<iframe src="//cdn.example.com/widget.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({}),
+  });
+
+  assert.match(out, /<iframe src="https:\/\/example\.com\/panel\.html"><\/iframe>/);
+  assert.match(out, /<iframe src="\/\/cdn\.example\.com\/widget\.html"><\/iframe>/);
+  assert.deepEqual(warnings, []);
+});
+
+test("keeps an author-set srcdoc authoritative when the iframe also has a local src", async () => {
+  const html =
+    '<!doctype html><html><body><iframe src="panel.html" ' + "srcdoc='<img src=\"local.png\">'></iframe></body></html>";
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/panel.html": "<p>Nested</p>",
+      "/art/local.png": Buffer.from("local"),
+    }),
+  });
+
+  assert.match(out, /<iframe src="panel\.html" srcdoc='<img src="local\.png">'><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-frame", ref: "panel.html" },
+      { kind: "srcdoc-resource", ref: "local.png" },
+    ],
+  );
+});
+
+test("rolls back the inline budget when an iframe child exceeds the asset cap", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><iframe src="panel.html"></iframe>' + '<img src="pic.png"></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    maxAssetBytes: 16,
+    readLocalFile: localReader({
+      "/art/panel.html": "<p>this child document is too large to inline</p>",
+      "/art/pic.png": png,
+    }),
+  });
+
+  assert.match(out, /<iframe src="panel\.html"><\/iframe>/);
+  assert.match(out, /<img src="data:image\/png;base64,iVBORw==">/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "too-large", ref: "panel.html" },
+      { kind: "unsupported-frame", ref: "panel.html" },
+    ],
   );
 });
 
