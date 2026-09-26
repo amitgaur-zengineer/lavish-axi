@@ -2968,6 +2968,57 @@ test("rewrites a child base href to the export-relative path inside srcdoc", asy
   );
 });
 
+test("rewrites a grandchild's base href relative to its own inherited srcdoc base, not the export root", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><iframe src="frames/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/frames/panel.html":
+        '<html><head><base href="sub/"></head><body><iframe src="grand.html"></iframe></body></html>',
+      "/art/frames/sub/grand.html": '<html><head><base href="assets/"></head><body><img src="logo.png"></body></html>',
+      "/art/frames/sub/assets/logo.png": png,
+    }),
+  });
+
+  // panel.html's own base rewrites to "frames/sub/" (relative to the export root). The grandchild
+  // inherits *that* as its base, so its own rewritten base must resolve relative to "frames/sub/"
+  // (i.e. just "assets/"), not be re-expressed relative to the export root as "frames/sub/assets/"
+  // (which would double the "frames/sub/" prefix once the browser resolves it against the parent).
+  assert.match(out, /base href=&quot;frames\/sub\/&quot;/);
+  assert.match(out, /base href=&amp;quot;assets\/&amp;quot;/);
+  assert.doesNotMatch(out, /frames\/sub\/assets/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
+test("rewrites the active child base href, not one nested inside a template or script", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><iframe src="frames/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/frames/panel.html":
+        '<html><head><template><base href="wrong/"></template>' +
+        '<script>var x = "<base href=\\"also-wrong/\\">";</script>' +
+        '<base href="assets/"></head><body><img src="logo.png"></body></html>',
+      "/art/frames/assets/logo.png": png,
+    }),
+  });
+
+  // The active base (the third one, not inert) is what gets rewritten...
+  assert.match(out, /base href=&quot;frames\/assets\/&quot;/);
+  // ...and the inert copies inside <template>/<script> are left untouched, not mistaken for it.
+  assert.match(out, /template>&lt;base href=&quot;wrong\/&quot;>&lt;\/template>/);
+  assert.match(out, /base href=\\&quot;also-wrong\/\\&quot;/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
 test("warns and leaves the reference when iframe nesting exceeds the inline depth", async () => {
   const html = '<!doctype html><html><body><iframe src="outer.html"></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {

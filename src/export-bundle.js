@@ -147,6 +147,7 @@ export async function buildSelfContainedHtml(html, options = {}) {
     ),
     maxDepth: Number.isFinite(options.maxDepth) ? options.maxDepth : DEFAULT_MAX_DEPTH,
     frameDepth: 0,
+    srcdocBaseDir: options.baseDir || process.cwd(),
     inlinedBytes: 0,
     warnings: /** @type {Array<{ kind: string, ref: string, reason?: string }>} */ ([]),
   };
@@ -2245,38 +2246,39 @@ function resolveDocumentRefBase(html, ctx, documentDir = ctx.baseDir) {
   return refBaseFromHref(href, documentDir);
 }
 
-// A srcdoc document inherits the exported parent's base URL, so a child <base href> that resolves
-// locally no longer points where it did on disk. Rewrite it to the path from the export directory
+// A srcdoc document inherits its enclosing frame's base URL (which, for a nested frame, is itself
+// an already-rewritten path rather than the export root), so a child <base href> that resolves
+// locally no longer points where it did on disk. Rewrite it to the path from that inherited base
 // to the child's resolved base directory so relative references left in the child (links, failed
 // inline leftovers) resolve correctly in the export. Remote and file: bases are left for the
 // existing scrub/redaction paths.
-function rewriteChildBaseForSrcdoc(html, childDocumentBase, ctx) {
-  const href = findFirstDocumentBaseHref(html);
-  if (!href || childDocumentBase.kind !== "local") return html;
-  if (refBaseFromHref(href, childDocumentBase.dir).kind !== "local") return html;
-  const rel = path.relative(ctx.baseDir, childDocumentBase.dir);
-  const hrefValue = rel === "" ? "./" : `${encodeRelativeRef(rel.split(path.sep).join("/"))}/`;
-  let index = 0;
-  while (index < html.length) {
-    const lt = html.indexOf("<", index);
-    if (lt === -1) return html;
-    const token = readHtmlToken(html, lt);
-    if (!token) {
-      index = lt + 1;
-      continue;
-    }
-    if (token.type === "start" && token.tag.toLowerCase() === "base") {
-      const attr = findHtmlAttr(token.attrs, "href");
-      if (!attr || !attr.hasValue) return html;
-      const replaced = replaceAttrTokenValue(token.attrs, attr, hrefValue);
-      return html.slice(0, lt) + token.raw.replace(token.attrs, replaced) + html.slice(token.end);
-    }
-    index = token.end;
+// Returns the (possibly rewritten) html plus the base directory a grandchild frame's own srcdoc
+// rewrite must treat as inherited: the child's resolved base directory when a rewrite happened
+// (that's what the rewritten href now resolves to), otherwise the unchanged inheritedBaseDir.
+function rewriteChildBaseForSrcdoc(html, childDocumentBase, inheritedBaseDir) {
+  const found = findFirstDocumentBaseTag(html);
+  if (!found || childDocumentBase.kind !== "local") return { html, effectiveBaseDir: inheritedBaseDir };
+  if (refBaseFromHref(found.href, childDocumentBase.dir).kind !== "local") {
+    return { html, effectiveBaseDir: inheritedBaseDir };
   }
-  return html;
+  const attr = findHtmlAttr(found.token.attrs, "href");
+  if (!attr || !attr.hasValue) return { html, effectiveBaseDir: inheritedBaseDir };
+  const rel = path.relative(inheritedBaseDir, childDocumentBase.dir);
+  const hrefValue = rel === "" ? "./" : `${encodeRelativeRef(rel.split(path.sep).join("/"))}/`;
+  const replaced = replaceAttrTokenValue(found.token.attrs, attr, hrefValue);
+  const rewritten =
+    html.slice(0, found.index) + found.token.raw.replace(found.token.attrs, replaced) + html.slice(found.token.end);
+  return { html: rewritten, effectiveBaseDir: childDocumentBase.dir };
 }
 
 function findFirstDocumentBaseHref(html) {
+  return findFirstDocumentBaseTag(html)?.href ?? null;
+}
+
+// Locates the same "active" <base href> that findFirstDocumentBaseHref resolves to, so a rewrite
+// targets that tag rather than an earlier <base> nested inside a <template> or script/raw-text
+// element (which never takes effect in the rendered document).
+function findFirstDocumentBaseTag(html) {
   let index = 0;
   const openStack = [];
   while (index < html.length) {
@@ -2298,7 +2300,7 @@ function findFirstDocumentBaseHref(html) {
       const effectiveSelfClosing = isEffectiveSelfClosingTag(tag, token.selfClosing, openStack, elementNamespace);
       if (elementNamespace === "html" && tag === "base") {
         const href = getAttr(token.attrs, "href");
-        if (href) return href;
+        if (href) return { index: lt, token, href };
       }
       if (elementNamespace === "html" && tag === PLAINTEXT_TAG && !effectiveSelfClosing) break;
       if (elementNamespace === "html" && INERT_CONTENT_TAGS.has(tag) && !effectiveSelfClosing) {
@@ -2652,14 +2654,17 @@ async function inlineFrameSrc(attrs, baseDir, ctx) {
     return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
   }
   ctx.frameDepth += 1;
+  const parentSrcdocBaseDir = ctx.srcdocBaseDir;
   let childHtml;
   try {
     const childDocumentBase = resolveDocumentRefBase(loaded.text, ctx, loaded.baseDir);
-    childHtml = await transformMarkup(
-      rewriteChildBaseForSrcdoc(loaded.text, childDocumentBase, ctx),
+    const { html: rewritten, effectiveBaseDir } = rewriteChildBaseForSrcdoc(
+      loaded.text,
       childDocumentBase,
-      ctx,
+      parentSrcdocBaseDir,
     );
+    ctx.srcdocBaseDir = effectiveBaseDir;
+    childHtml = await transformMarkup(rewritten, childDocumentBase, ctx);
   } catch (error) {
     ctx.inlinedBytes = startBytes;
     ctx.warnings.push({
@@ -2670,6 +2675,7 @@ async function inlineFrameSrc(attrs, baseDir, ctx) {
     return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
   } finally {
     ctx.frameDepth -= 1;
+    ctx.srcdocBaseDir = parentSrcdocBaseDir;
   }
   const cleaned = removeAttrs(attrs, ["src", "srcdoc"]);
   return { attrs: `${cleaned} srcdoc="${escapeSrcdocAttr(childHtml)}"`, inlined: true };
