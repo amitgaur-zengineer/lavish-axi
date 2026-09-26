@@ -2910,6 +2910,64 @@ test("resolves iframe child references against the child document base href", as
   );
 });
 
+test("leaves a non-HTML local iframe document as a reference instead of inlining its bytes", async () => {
+  const html = '<!doctype html><html><body><iframe src="doc.pdf"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/doc.pdf": Buffer.from("%PDF"),
+    }),
+  });
+
+  assert.match(out, /<iframe src="doc\.pdf"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [{ kind: "unsupported-frame", ref: "doc.pdf" }],
+  );
+  assert.match(warnings[0].reason, /only HTML documents are inlined/);
+});
+
+test("leaves iframe references with a query or fragment suffix as references", async () => {
+  const html =
+    '<!doctype html><html><body><iframe src="panel.html#intro"></iframe>' +
+    '<iframe src="panel.html?mode=print"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/panel.html": "<p>Nested</p>",
+    }),
+  });
+
+  assert.match(out, /<iframe src="panel\.html#intro"><\/iframe>/);
+  assert.match(out, /<iframe src="panel\.html\?mode=print"><\/iframe>/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [
+      { kind: "unsupported-frame", ref: "panel.html#intro" },
+      { kind: "unsupported-frame", ref: "panel.html?mode=print" },
+    ],
+  );
+  assert.match(warnings[0].reason, /query or fragment suffix/);
+});
+
+test("rewrites a child base href to the export-relative path inside srcdoc", async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const html = '<!doctype html><html><body><iframe src="frames/panel.html"></iframe></body></html>';
+  const { html: out, warnings } = await buildSelfContainedHtml(html, {
+    baseDir: "/art",
+    readLocalFile: localReader({
+      "/art/frames/panel.html": '<html><head><base href="assets/"></head><body><img src="logo.png"></body></html>',
+      "/art/frames/assets/logo.png": png,
+    }),
+  });
+
+  assert.match(out, /<iframe srcdoc="[^"]*base href=&quot;frames\/assets\/&quot;[^"]*data:image\/png;base64,/);
+  assert.deepEqual(
+    warnings.map((warning) => ({ kind: warning.kind, ref: warning.ref })),
+    [],
+  );
+});
+
 test("warns and leaves the reference when iframe nesting exceeds the inline depth", async () => {
   const html = '<!doctype html><html><body><iframe src="outer.html"></iframe></body></html>';
   const { html: out, warnings } = await buildSelfContainedHtml(html, {

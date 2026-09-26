@@ -2245,6 +2245,37 @@ function resolveDocumentRefBase(html, ctx, documentDir = ctx.baseDir) {
   return refBaseFromHref(href, documentDir);
 }
 
+// A srcdoc document inherits the exported parent's base URL, so a child <base href> that resolves
+// locally no longer points where it did on disk. Rewrite it to the path from the export directory
+// to the child's resolved base directory so relative references left in the child (links, failed
+// inline leftovers) resolve correctly in the export. Remote and file: bases are left for the
+// existing scrub/redaction paths.
+function rewriteChildBaseForSrcdoc(html, childDocumentBase, ctx) {
+  const href = findFirstDocumentBaseHref(html);
+  if (!href || childDocumentBase.kind !== "local") return html;
+  if (refBaseFromHref(href, childDocumentBase.dir).kind !== "local") return html;
+  const rel = path.relative(ctx.baseDir, childDocumentBase.dir);
+  const hrefValue = rel === "" ? "./" : `${encodeRelativeRef(rel.split(path.sep).join("/"))}/`;
+  let index = 0;
+  while (index < html.length) {
+    const lt = html.indexOf("<", index);
+    if (lt === -1) return html;
+    const token = readHtmlToken(html, lt);
+    if (!token) {
+      index = lt + 1;
+      continue;
+    }
+    if (token.type === "start" && token.tag.toLowerCase() === "base") {
+      const attr = findHtmlAttr(token.attrs, "href");
+      if (!attr || !attr.hasValue) return html;
+      const replaced = replaceAttrTokenValue(token.attrs, attr, hrefValue);
+      return html.slice(0, lt) + token.raw.replace(token.attrs, replaced) + html.slice(token.end);
+    }
+    index = token.end;
+  }
+  return html;
+}
+
 function findFirstDocumentBaseHref(html) {
   let index = 0;
   const openStack = [];
@@ -2575,9 +2606,12 @@ function scrubUnsupportedStyleElementBody(css, baseDir, ctx) {
 // Inline a local iframe `src` document as an escaped `srcdoc`: the child HTML is recursively
 // transformed against its own directory (so its stylesheets, scripts, and media bundle too), then
 // attribute-escaped so it round-trips through decodeHtmlCharacterReferences. Declines - keeping the
-// warn path - for remote refs, file: URLs, iframes that already carry srcdoc (srcdoc wins over src
-// at render time), nested frames past the depth guard, and reads that fail or exceed the byte caps;
-// any budget the child read consumed is rolled back on the way out.
+// warn path - for remote refs, file: URLs, refs carrying a query or fragment suffix (srcdoc cannot
+// preserve them), non-HTML documents, iframes that already carry srcdoc (srcdoc wins over src at
+// render time), nested frames past the depth guard, and reads that fail or exceed the byte caps;
+// any budget the child read consumed is rolled back on the way out. A child <base href> resolves
+// relative to the srcdoc document (which inherits the exported parent's base), so a local child
+// base is rewritten to the export-relative path before inlining.
 async function inlineFrameSrc(attrs, baseDir, ctx) {
   const attr = findHtmlAttr(attrs, "src");
   if (!attr || !attr.hasValue) return { attrs, inlined: false };
@@ -2587,6 +2621,22 @@ async function inlineFrameSrc(attrs, baseDir, ctx) {
   }
   const descriptor = resolveRef(ref, baseDir, ctx, HTML_REF_OPTIONS);
   if (descriptor.kind !== "file") return { attrs: warnFrameSrc(attrs, baseDir, ctx), inlined: false };
+  if (splitRefSuffix(ref).suffix) {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "iframes with a query or fragment suffix are left as references because srcdoc cannot carry the suffix",
+    });
+    return { attrs: replaceUnresolvedAttrRef(attrs, "src", ref), inlined: false };
+  }
+  if (!/\.(html?|xhtml)$/i.test(descriptor.path)) {
+    ctx.warnings.push({
+      kind: "unsupported-frame",
+      ref,
+      reason: "only HTML documents are inlined; other iframe documents are left as references",
+    });
+    return { attrs: replaceUnresolvedAttrRef(attrs, "src", ref), inlined: false };
+  }
   if (ctx.frameDepth >= ctx.maxDepth) {
     ctx.warnings.push({
       kind: "unsupported-frame",
@@ -2605,7 +2655,11 @@ async function inlineFrameSrc(attrs, baseDir, ctx) {
   let childHtml;
   try {
     const childDocumentBase = resolveDocumentRefBase(loaded.text, ctx, loaded.baseDir);
-    childHtml = await transformMarkup(loaded.text, childDocumentBase, ctx);
+    childHtml = await transformMarkup(
+      rewriteChildBaseForSrcdoc(loaded.text, childDocumentBase, ctx),
+      childDocumentBase,
+      ctx,
+    );
   } catch (error) {
     ctx.inlinedBytes = startBytes;
     ctx.warnings.push({
